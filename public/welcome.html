@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Homillow — Your whole family, one calm place</title>
+<meta name="description" content="Homillow is the family operating system that ends the scheduling chaos. Shared calendar, chores, groceries, and a daily briefing — one calm place for your whole family." />
+<style>
+  :root{
+    --bg:#f4f1ec;--card:#fff;--ink:#23303a;--muted:#6d7883;--line:#e7e2d9;
+    --brand:#c2582f;--brand2:#e08a4a;--accent:#20303f;--ok:#2e8b6f;
+    --radius:20px;--shadow:0 10px 34px rgba(35,48,58,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+  a{color:inherit}
+  .btn{display:inline-block;background:var(--brand);color:#fff;text-decoration:none;font-weight:700;padding:15px 26px;border-radius:14px;font-size:16px;box-shadow:var(--shadow);transition:transform .08s}
+  .btn:active{transform:translateY(1px)}
+  .btn.big{padding:17px 32px;font-size:17px}
+  .btn.ghost{background:transparent;color:var(--brand);box-shadow:none;border:2px solid var(--brand)}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:20;background:rgba(244,241,236,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;padding:12px 20px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;letter-spacing:-.3px}
+  .logo img{width:34px;height:34px;border-radius:9px}
+  nav .links a{margin-left:22px;text-decoration:none;color:var(--muted);font-weight:600;font-size:15px}
+  nav .links a.cta{color:var(--brand)}
+  @media(max-width:640px){nav .links a:not(.cta){display:none}}
+
+  /* hero */
+  .hero{background:linear-gradient(160deg,#faf3ea 0%,#f3ddd0 60%,#efd0c2 100%);padding:64px 0 72px;text-align:center}
+  .hero .pill{display:inline-block;background:#fff;color:var(--brand);font-weight:700;font-size:13px;padding:7px 14px;border-radius:999px;box-shadow:var(--shadow);margin-bottom:22px}
+  .hero h1{font-size:46px;line-height:1.08;letter-spacing:-1.2px;max-width:760px;margin:0 auto 16px}
+  .hero p.sub{font-size:19px;color:#54606b;max-width:600px;margin:0 auto 28px}
+  .hero .cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .hero .tiny{margin-top:16px;color:var(--muted);font-size:13.5px}
+  @media(max-width:640px){.hero h1{font-size:34px}.hero p.sub{font-size:17px}}
+
+  .trustbar{background:var(--accent);color:#fff}
+  .trustbar .wrap{display:flex;gap:26px;justify-content:center;flex-wrap:wrap;padding:14px 20px;font-size:14px;font-weight:600;opacity:.95}
+  .trustbar span{white-space:nowrap}
+
+  section{padding:64px 0}
+  h2{font-size:32px;letter-spacing:-.6px;text-align:center;margin-bottom:10px}
+  .lead{text-align:center;color:var(--muted);max-width:600px;margin:0 auto 42px;font-size:17px}
+
+  /* problem */
+  .texts{max-width:620px;margin:0 auto;display:grid;gap:12px}
+  .bubble{background:#fff;border:1px solid var(--line);border-radius:16px;border-bottom-left-radius:4px;padding:13px 17px;font-size:15.5px;color:#4a5560;box-shadow:0 3px 10px rgba(35,48,58,.05);max-width:80%}
+  .bubble.r{margin-left:auto;border-bottom-left-radius:16px;border-bottom-right-radius:4px;background:var(--brand-soft,#f3ddd0)}
+  .solve{text-align:center;margin-top:34px;font-size:19px;font-weight:700}
+  .solve b{color:var(--brand)}
+
+  /* features */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  @media(max-width:820px){.grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:520px){.grid{grid-template-columns:1fr}}
+  .feat{background:var(--card);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow)}
+  .feat .ic{font-size:26px}
+  .feat h3{font-size:17px;margin:12px 0 6px}
+  .feat p{color:var(--muted);font-size:14.5px}
+  .feat.hot{background:linear-gradient(160deg,#20303f,#2b4152);color:#fff}
+  .feat.hot p{color:#c7d2db}
+  .feat.hot .tag{display:inline-block;background:var(--brand);color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;margin-top:10px}
+
+  /* pricing */
+  .price-sec{background:#fff}
+  .plan{max-width:420px;margin:0 auto;background:linear-gradient(165deg,#fff, #fbf4ee);border:2px solid var(--brand);border-radius:24px;padding:34px 30px;text-align:center;box-shadow:var(--shadow)}
+  .plan .name{font-weight:800;font-size:14px;letter-spacing:1.5px;text-transform:uppercase;color:var(--brand)}
+  .plan .amt{font-size:52px;font-weight:800;letter-spacing:-1.5px;margin:10px 0 2px}
+  .plan .amt span{font-size:19px;color:var(--muted);font-weight:600}
+  .plan .yr{color:var(--ok);font-weight:700;font-size:15px;margin-bottom:20px}
+  .plan ul{list-style:none;text-align:left;margin:20px 0 24px;display:grid;gap:11px}
+  .plan li{padding-left:28px;position:relative;font-size:15.5px}
+  .plan li:before{content:"✓";position:absolute;left:0;color:var(--ok);font-weight:800}
+  .plan .trial{margin-top:14px;color:var(--muted);font-size:13.5px}
+
+  /* founder */
+  .founder{background:linear-gradient(160deg,#faf3ea,#f3ddd0)}
+  .founder .card{max-width:720px;margin:0 auto;background:#fff;border-radius:24px;padding:34px;box-shadow:var(--shadow)}
+  .founder h2{text-align:left;margin-bottom:14px}
+  .founder p{color:#4a5560;font-size:16px;margin-bottom:14px}
+  .founder .sig{font-weight:800;color:var(--accent)}
+
+  /* security */
+  .sec .grid{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:520px){.sec .grid{grid-template-columns:1fr}}
+  .sec .feat .ic{color:var(--ok)}
+
+  /* faq */
+  .faq{max-width:720px;margin:0 auto;display:grid;gap:12px}
+  details{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  summary{font-weight:700;cursor:pointer;font-size:16px}
+  details p{color:var(--muted);margin-top:10px;font-size:15px}
+
+  .final{background:var(--accent);color:#fff;text-align:center}
+  .final h2{color:#fff}
+  .final p{color:#c7d2db;margin-bottom:26px}
+
+  footer{background:#18242e;color:#9aa7b1;font-size:14px;padding:30px 0}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
+  footer a{color:#c7d2db;text-decoration:none;margin-left:18px}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <div class="logo"><img src="/icons/icon-192.png" alt="Homillow" />Homillow</div>
+  <div class="links">
+    <a href="#features">Features</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#security">Security</a>
+    <a href="/" class="cta">Start free trial →</a>
+  </div>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <div class="pill">🔥 The operating system for your family</div>
+  <h1>Your whole family, one calm place.</h1>
+  <p class="sub">Homillow ends the scheduling chaos — one shared home for your calendar, chores, groceries, and who's-doing-what. No more "did you know?" texts.</p>
+  <div class="cta-row">
+    <a href="/" class="btn big">Start your 7-day free trial</a>
+    <a href="#features" class="btn ghost big">See how it works</a>
+  </div>
+  <div class="tiny">No ads, ever · Cancel anytime · Set up in 2 minutes</div>
+</div></header>
+
+<div class="trustbar"><div class="wrap">
+  <span>🔒 Bank-level security</span>
+  <span>🚫 No ads, ever</span>
+  <span>🙅 Your data is never sold</span>
+  <span>⚡ Real-time sync</span>
+</div></div>
+
+<section><div class="wrap">
+  <h2>The mental load is real.</h2>
+  <p class="lead">One person ends up holding the whole household in their head. Homillow puts it somewhere you both can see.</p>
+  <div class="texts">
+    <div class="bubble">Did you know Sarah has practice today?</div>
+    <div class="bubble r">Wait, who's picking her up??</div>
+    <div class="bubble">Are you working Saturday? What's for dinner?</div>
+    <div class="bubble r">Did you ever pay the electric bill?</div>
+  </div>
+  <div class="solve">With Homillow, the answer is <b>already on the screen.</b></div>
+</div></section>
+
+<section id="features" style="background:#fbf7f1"><div class="wrap">
+  <h2>Everything that runs your home — together.</h2>
+  <p class="lead">Not another calendar. A shared command center the whole family actually uses.</p>
+  <div class="grid">
+    <div class="feat"><div class="ic">📅</div><h3>Shared calendar</h3><p>Work, school, sports, church, appointments — color-coded, recurring, everyone in sync.</p></div>
+    <div class="feat"><div class="ic">👤</div><h3>Who's responsible</h3><p>Every event and pickup is assigned to a name. No more assuming the other person's got it.</p></div>
+    <div class="feat"><div class="ic">⚡</div><h3>Real-time sync</h3><p>She adds it, you see it instantly. One source of truth for the whole household.</p></div>
+    <div class="feat hot"><div class="ic">⚠️</div><h3>Conflict detection</h3><p>Two things booked on the same person at the same time? Homillow catches it before it's a problem.</p><span class="tag">Cozi can't do this</span></div>
+    <div class="feat"><div class="ic">✅</div><h3>Tasks &amp; chores</h3><p>Assign chores, let the kids check them off, keep the house running without nagging.</p></div>
+    <div class="feat"><div class="ic">🛒</div><h3>Shared grocery list</h3><p>Both add to it live. Check off milk, and it's gone from everyone's list.</p></div>
+    <div class="feat hot"><div class="ic">🌅</div><h3>Daily briefing</h3><p>Open Homillow in the morning and understand your family's entire day in 30 seconds.</p><span class="tag">Signature feature</span></div>
+    <div class="feat"><div class="ic">🤖</div><h3>AI family assistant</h3><p>"Find a night we're both free for date night." Coming soon to Premium.</p><span style="display:inline-block;color:var(--muted);font-size:12px;font-weight:700;margin-top:10px">COMING SOON</span></div>
+    <div class="feat"><div class="ic">🔒</div><h3>Private &amp; secure</h3><p>Encrypted, isolated per family, no ads, never sold. Built for family data.</p></div>
+  </div>
+</div></section>
+
+<section id="pricing" class="price-sec"><div class="wrap">
+  <h2>One simple price. Everything included.</h2>
+  <p class="lead">No confusing tiers. No ads eating your family's day. Just the full app.</p>
+  <div class="plan">
+    <div class="name">Homillow Premium</div>
+    <div class="amt">$4.99<span>/month</span></div>
+    <div class="yr">or $29.99/year — save 50%</div>
+    <ul>
+      <li>Unlimited family members</li>
+      <li>Shared calendar + real-time sync</li>
+      <li>Conflict detection &amp; daily briefing</li>
+      <li>Tasks, chores &amp; grocery list</li>
+      <li>Smart reminders</li>
+      <li>No ads — your data is never sold</li>
+      <li>AI family assistant (coming soon)</li>
+    </ul>
+    <a href="/" class="btn big" style="width:100%">Start 7-day free trial</a>
+    <div class="trial">Free for 7 days, then $4.99/mo. Cancel anytime.</div>
+  </div>
+</div></div></section>
+
+<section class="founder"><div class="wrap">
+  <div class="card">
+    <h2>Built by a dad, for families.</h2>
+    <p>Homillow started at my own kitchen table. Between work, church, and three kids' schedules, my wife and I were drowning in "who's got what" texts — and things still slipped through.</p>
+    <p>I couldn't find one app that just told our whole family what was happening, who was responsible, and what needed to get done. So we built it. Homillow is the calm center we needed — and now it's yours.</p>
+    <p class="sig">— Kensley, Founder of Homillow</p>
+  </div>
+</div></section>
+
+<section id="security" class="sec" style="background:#fbf7f1"><div class="wrap">
+  <h2>Your family's information stays your family's.</h2>
+  <p class="lead">Security isn't a feature we bolted on — it's the foundation.</p>
+  <div class="grid">
+    <div class="feat"><div class="ic">🔐</div><h3>Encrypted &amp; protected</h3><p>Secure login and encrypted connections keep your data locked down in transit.</p></div>
+    <div class="feat"><div class="ic">🧱</div><h3>Family isolation</h3><p>Your family's data is walled off. No other family can ever see it — verified, not promised.</p></div>
+    <div class="feat"><div class="ic">🚫</div><h3>No ads, no selling</h3><p>We make money when you subscribe — never by selling your family's information.</p></div>
+    <div class="feat"><div class="ic">👨‍👩‍👧</div><h3>You control access</h3><p>Parents decide what each member and child can see. Roles and permissions, your call.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Questions, answered.</h2>
+  <div class="faq">
+    <details><summary>Can my spouse and I both use it at the same time?</summary><p>Yes — that's the whole point. Add your partner and everything syncs live between your phones. Add it, and they see it instantly.</p></details>
+    <details><summary>What devices does it work on?</summary><p>Any phone, tablet, or computer. Add it to your home screen and it runs like a normal app.</p></details>
+    <details><summary>Is there really no free version?</summary><p>There's a full 7-day free trial so you can experience everything first. After that it's one simple price — no ads, no catch.</p></details>
+    <details><summary>Is my family's data private?</summary><p>Completely. It's encrypted, isolated from every other family, and never sold or used for ads.</p></details>
+    <details><summary>Can I cancel anytime?</summary><p>Yes. Cancel in one tap, no phone calls, no hassle.</p></details>
+  </div>
+</div></section>
+
+<section class="final"><div class="wrap">
+  <h2>Bring the calm home.</h2>
+  <p>Join families who stopped managing chaos and started actually being together.</p>
+  <a href="/" class="btn big">Start your 7-day free trial</a>
+</div></section>
+
+<footer><div class="wrap">
+  <div>© 2026 Homillow. Made for families.</div>
+  <div><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a><a href="/">Open the app</a></div>
+</div></footer>
+
+</body>
+</html>

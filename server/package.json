@@ -1,0 +1,25 @@
+{
+  "name": "hearth-server",
+  "version": "0.1.0",
+  "description": "Homillow — your whole family, one calm place. MVP backend.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie": "^1.0.2",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "ws": "^8.18.0"
+  },
+  "overrides": {
+    "qs": "^6.16.0"
+  }
+}

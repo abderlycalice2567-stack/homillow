@@ -1,0 +1,8 @@
+node_modules/
+server/.secret
+server/hearth.db
+server/hearth.db-wal
+server/hearth.db-shm
+*.log
+.DS_Store
+cloudflared

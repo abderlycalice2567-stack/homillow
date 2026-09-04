@@ -1,0 +1,22 @@
+# Render blueprint — one-click deploy for Homillow.
+# In Render: New + → "Blueprint" → connect the repo → it reads this file.
+services:
+  - type: web
+    name: homillow
+    runtime: node
+    rootDir: server
+    plan: starter            # ~$7/mo, always-on
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"           # matches local; node:sqlite runs without a flag
+      - key: HEARTH_JWT_SECRET
+        generateValue: true   # Render generates a strong secret, kept out of code
+      - key: DB_PATH
+        value: /data/hearth.db
+    disk:
+      name: homillow-data     # persistent disk so the database survives redeploys
+      mountPath: /data
+      sizeGB: 1
