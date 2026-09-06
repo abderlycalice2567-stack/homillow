@@ -596,10 +596,18 @@ app.delete('/api/families/:familyId/grocery/:id', requireAuth, requireFamily, re
 
 // ---------- briefing ----------
 app.get('/api/families/:familyId/briefing', requireAuth, requireFamily, (req, res) => {
-  const dayStr = isISO(req.query.date) ? req.query.date : new Date().toISOString();
-  const d = new Date(dayStr);
-  const dayStart = new Date(d); dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
+  // The client sends its own local day boundaries (from/to as UTC ISO instants) so
+  // "today" always matches the USER's timezone, not the server's (which is UTC on
+  // Render). Fall back to a server-local day only for older clients / direct calls.
+  let dayStart, dayEnd;
+  if (isISO(req.query.from) && isISO(req.query.to)) {
+    dayStart = new Date(req.query.from);
+    dayEnd = new Date(req.query.to);
+  } else {
+    const d = isISO(req.query.date) ? new Date(req.query.date) : new Date();
+    dayStart = new Date(d); dayStart.setHours(0, 0, 0, 0);
+    dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
+  }
   const from = dayStart.getTime(), to = dayEnd.getTime();
   const rows = db.prepare('SELECT * FROM events WHERE family_id = ?').all(req.familyId).map(rowToEvent);
   const occ = expandAll(rows, from, to);

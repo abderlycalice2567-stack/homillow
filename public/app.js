@@ -208,8 +208,13 @@ function connectWS() {
 async function refresh(quiet) {
   if (!state.familyId) return;
   const f = state.familyId;
+  // Send THIS device's local day bounds so the briefing's "today" matches the
+  // user's timezone, not the server's (UTC on Render).
+  const ds = new Date(); ds.setHours(0, 0, 0, 0);
+  const de = new Date(); de.setHours(23, 59, 59, 999);
+  const bq = `?from=${encodeURIComponent(ds.toISOString())}&to=${encodeURIComponent(de.toISOString())}`;
   const [fam, brief, ev, tk, gr, gl, mo, pr] = await Promise.all([
-    api(`/families/${f}`), api(`/families/${f}/briefing`),
+    api(`/families/${f}`), api(`/families/${f}/briefing${bq}`),
     api(`/families/${f}/events`), api(`/families/${f}/tasks`), api(`/families/${f}/grocery`),
     api(`/families/${f}/goals`), api(`/families/${f}/moments`), api(`/families/${f}/prayers`),
   ]);
