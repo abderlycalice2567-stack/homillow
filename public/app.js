@@ -58,7 +58,13 @@ async function api(path, opts = {}) {
   if (state.token) headers.Authorization = 'Bearer ' + state.token;
   const res = await fetch('/api' + path, { ...opts, headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
   let body = null; try { body = await res.json(); } catch {}
-  if (!res.ok) throw new Error(body?.error || 'Request failed');
+  if (!res.ok) {
+    const err = new Error(body?.error || 'Request failed');
+    err.status = res.status;
+    err.code = body?.error;          // e.g. 'premium_required'
+    err.feature = body?.feature;     // human-friendly upsell message
+    throw err;
+  }
   return body;
 }
 function setToken(t) { state.token = t; if (t) localStorage.setItem('hearth_token', t); else localStorage.removeItem('hearth_token'); }
@@ -121,6 +127,7 @@ function renderAuth(mode = 'login') {
     <div class="field"><label>Email</label><input id="email" type="email" autocomplete="email" /></div>
     <div class="field"><label>Password</label><input id="password" type="password" autocomplete="${mode === 'register' ? 'new-password' : 'current-password'}" /></div>
     <button class="btn" id="go">${mode === 'register' ? 'Create account' : 'Sign in'}</button>
+    ${mode === 'register' ? `<div class="consent">By creating an account, you agree to Homillow's <a href="/terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</div>` : ''}
     <div class="linkrow">${mode === 'register'
       ? `Already have an account? <a id="swap">Sign in</a>`
       : `New to Homillow? <a id="swap">Create account</a>`}</div>
@@ -186,7 +193,9 @@ function selectFamily(id) { state.familyId = id; localStorage.setItem('hearth_fa
 function connectWS() {
   if (state.ws) { try { state.ws.close(); } catch {} }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/?token=${encodeURIComponent(state.token)}&familyId=${state.familyId}`);
+  // Pass the JWT as a WebSocket subprotocol (a request header), never in the URL,
+  // so the token stays out of access logs and browser history.
+  const ws = new WebSocket(`${proto}://${location.host}/?familyId=${state.familyId}`, [state.token]);
   ws.onmessage = (ev) => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (['events', 'tasks', 'grocery', 'members', 'goals', 'moments', 'prayers'].includes(m.type)) refresh(true);
@@ -205,8 +214,39 @@ async function refresh(quiet) {
     api(`/families/${f}/goals`), api(`/families/${f}/moments`), api(`/families/${f}/prayers`),
   ]);
   state.members = fam.members; state.me = fam.me; state.familyName = fam.family.name;
+  state.billing = fam.billing || { plan: 'free', premium: false, billing_enabled: false, free_member_limit: 4 };
   state.data = { briefing: brief, events: ev.events, tasks: tk.tasks, grocery: gr.items, goals: gl.goals, moments: mo.moments, prayers: pr.prayers };
   if (!quiet) {} render();
+}
+
+// ---------- billing / upgrade flow ----------
+function isPremiumNow() { return !!(state.billing?.premium); }
+function isAdmin() { return state.me?.role === 'admin'; }
+
+// Kick off Stripe Checkout (admins only). plan: 'monthly' | 'annual'.
+async function startUpgrade(plan = 'monthly') {
+  if (!isAdmin()) { alert('Ask a family admin to upgrade to Premium.'); return; }
+  try {
+    const out = await api(`/families/${state.familyId}/billing/checkout`, { method: 'POST', body: { plan } });
+    if (out?.url) window.location.href = out.url;         // hand off to Stripe's hosted page
+  } catch (e) {
+    alert(e.status === 503 ? 'Billing isn’t switched on yet — check back soon.' : (e.message || 'Could not start upgrade.'));
+  }
+}
+
+// Open the Stripe portal to manage / cancel.
+async function openBillingPortal() {
+  try {
+    const out = await api(`/families/${state.familyId}/billing/portal`, { method: 'POST' });
+    if (out?.url) window.location.href = out.url;
+  } catch (e) { alert(e.message || 'Could not open billing.'); }
+}
+
+// Shown when an action hits the paywall (402 premium_required).
+function promptUpgrade(message) {
+  const msg = message || 'This is part of Homillow Premium.';
+  if (!isAdmin()) { alert(`${msg}\n\nAsk a family admin to upgrade.`); return; }
+  if (confirm(`${msg}\n\nUpgrade to Homillow Premium now?`)) startUpgrade('monthly');
 }
 
 // ---------- main shell ----------
@@ -429,10 +469,19 @@ function renderAltar(c) {
   const answered = prayers.filter((p) => p.answered);
   let html = devotionalCard(dev, false);
 
+  const locked = state.billing?.billing_enabled && !isPremiumNow();
   html += `<div class="card">
-    <div class="card-head"><h3>🙏 Our prayer list</h3><span class="muted small">${active.length} active</span></div>
-    <div class="field" style="margin:0"><input id="padd" placeholder="Add a prayer request & press Enter" /></div>
-    <div style="margin-top:10px">`;
+    <div class="card-head"><h3>🙏 Our prayer list</h3><span class="muted small">${active.length} active</span></div>`;
+  if (locked) {
+    html += `<div class="upgrade-banner">
+        <div class="ub-title">✨ The Family Altar is part of Homillow Premium</div>
+        <div class="ub-sub">Keep a shared prayer list, celebrate answered prayers, and pray together as a family.</div>
+        <button class="btn-primary" id="altar-upgrade">Upgrade to Premium</button>
+      </div>`;
+  } else {
+    html += `<div class="field" style="margin:0"><input id="padd" placeholder="Add a prayer request & press Enter" /></div>`;
+  }
+  html += `<div style="margin-top:10px">`;
   if (!active.length) {
     html += `<div class="empty-warm"><div class="ee">🕯️</div><div class="et">Bring your family's needs here.</div><div class="es">Add a request above — then celebrate when God answers.</div></div>`;
   } else {
@@ -457,11 +506,18 @@ function renderAltar(c) {
   }
 
   c.innerHTML = html;
+  const upBtn = $('#altar-upgrade');
+  if (upBtn) upBtn.onclick = () => startUpgrade('monthly');
   const input = $('#padd');
   if (input) input.onkeydown = async (e) => {
     if (e.key === 'Enter' && input.value.trim()) {
-      await api(`/families/${state.familyId}/prayers`, { method: 'POST', body: { title: input.value.trim() } });
-      input.value = ''; refresh();
+      try {
+        await api(`/families/${state.familyId}/prayers`, { method: 'POST', body: { title: input.value.trim() } });
+        input.value = ''; refresh();
+      } catch (err) {
+        if (err.code === 'premium_required') promptUpgrade(err.feature);
+        else alert(err.message || 'Could not add prayer.');
+      }
     }
   };
   c.querySelectorAll('[data-answer]').forEach((el) => el.onclick = async (e) => {
@@ -563,6 +619,27 @@ function renderFamily(c) {
       <div class="field"><label>Their role</label><select id="invrole"><option value="adult">Adult</option><option value="admin">Admin (parent)</option><option value="child">Child</option></select></div>
       <button class="btn secondary" id="makeinv">Generate invite code</button><div id="invout" style="margin-top:12px"></div></div>`;
   }
+  // 💎 Homillow Premium — plan status + upgrade/manage
+  if (state.billing?.billing_enabled) {
+    const prem = isPremiumNow();
+    html += `<div class="card"><div class="card-head"><h3>${prem ? '💎 Homillow Premium' : '✨ Homillow'}</h3>
+      <span class="muted small">${prem ? 'Premium' : 'Free plan'}</span></div>`;
+    if (prem) {
+      html += `<div class="li-sub" style="margin-bottom:12px">Family Altar unlocked · unlimited members. Thank you for supporting Homillow. 🙏</div>`;
+      if (isAdmin()) html += `<button class="btn secondary" id="managebill">Manage subscription</button>`;
+    } else {
+      html += `<div class="li-sub" style="margin-bottom:12px">Unlock the <b>Family Altar</b> (shared prayers + devotional) and <b>unlimited members</b>. Free covers calendar, tasks & grocery for up to ${state.billing.free_member_limit} members.</div>`;
+      if (isAdmin()) {
+        html += `<div class="row2">
+          <button class="btn-primary" id="up-month" style="flex:1">Monthly</button>
+          <button class="btn secondary" id="up-year" style="flex:1">Yearly (save)</button>
+        </div>`;
+      } else {
+        html += `<div class="muted small">Ask a family admin to upgrade.</div>`;
+      }
+    }
+    html += `</div>`;
+  }
   html += `<div class="card"><div class="card-head"><h3>⚙️ Settings</h3></div>
     <div class="setting-row"><div class="li-main"><div class="t">Dark mode</div><div class="li-sub">Easy on the eyes at night</div></div>
     <button class="toggle ${document.documentElement.dataset.theme === 'dark' ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
@@ -580,8 +657,17 @@ function renderFamily(c) {
   if ($('#addmoment')) $('#addmoment').onclick = openMomentModal;
   c.querySelectorAll('[data-momdel]').forEach((el) => el.onclick = async () => { if (confirm('Remove this moment?')) { await api(`/families/${state.familyId}/moments/${el.dataset.momdel}`, { method: 'DELETE' }); refresh(); } });
   if ($('#themetoggle')) $('#themetoggle').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); render(); };
+  if ($('#up-month')) $('#up-month').onclick = () => startUpgrade('monthly');
+  if ($('#up-year')) $('#up-year').onclick = () => startUpgrade('annual');
+  if ($('#managebill')) $('#managebill').onclick = openBillingPortal;
   if ($('#makeinv')) $('#makeinv').onclick = async () => {
-    const out = await api(`/families/${state.familyId}/invites`, { method: 'POST', body: { role: $('#invrole').value } });
+    let out;
+    try {
+      out = await api(`/families/${state.familyId}/invites`, { method: 'POST', body: { role: $('#invrole').value } });
+    } catch (err) {
+      if (err.code === 'premium_required') return promptUpgrade(err.feature);
+      return alert(err.message || 'Could not create invite.');
+    }
     const link = location.origin;
     const msg = `Join our family on Homillow 🏡\n\n1. Open ${link}\n2. Create your account\n3. Tap "Join a family" and enter this code:\n\n${out.code}\n\n(Code expires in 7 days.)`;
     $('#invout').innerHTML = `

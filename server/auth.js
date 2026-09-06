@@ -78,4 +78,16 @@ export function requireAdmin(req, res, next) {
   next();
 }
 
+// Destructive/adult-only gate: admins and adults pass; child accounts cannot.
+// Guards irreversible actions (deleting calendar/tasks/prayers/etc.) so a child
+// account — or a shared kid device — can't wipe shared family data. Kids can
+// still create and complete their own items. Use after requireFamily.
+export function requireAdult(req, res, next) {
+  const role = req.membership?.role;
+  if (role !== 'admin' && role !== 'adult') {
+    return res.status(403).json({ error: 'Only an adult or admin can do that' });
+  }
+  next();
+}
+
 export { SECRET };

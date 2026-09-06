@@ -9,8 +9,12 @@ import { dirname, join } from 'path';
 import db, { audit } from './db.js';
 import {
   hashPassword, verifyPassword, issueToken, verifyToken,
-  requireAuth, requireFamily, requireAdmin, DUMMY_HASH,
+  requireAuth, requireFamily, requireAdmin, requireAdult, DUMMY_HASH,
 } from './auth.js';
+import {
+  billingConfigured, webhookConfigured, FREE_MEMBER_LIMIT, isPremium, familyById, planSnapshot,
+  createCheckout, createPortal, handleWebhook,
+} from './billing.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4000;
@@ -32,10 +36,27 @@ app.use(helmet({
     },
   },
 }));
+
+// Stripe webhook MUST see the raw, unparsed body to verify the signature, so it is
+// mounted before express.json — which otherwise consumes the stream into an object.
+app.post('/api/billing/webhook', express.raw({ type: 'application/json', limit: '1mb' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  try {
+    const result = await handleWebhook(req.body, sig);
+    res.json({ received: true, ...result });
+  } catch (err) {
+    // A bad signature or unconfigured webhook is a 400/503, never a 500 loop.
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
 app.use(express.json({ limit: '256kb' }));
 
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false });
 const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 600, standardHeaders: true, legacyHeaders: false });
+// Tighter cap on billing actions — each one hits the Stripe API. The webhook is
+// mounted earlier (before this) so Stripe's retries are never rate-limited.
+const billingLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
 app.use('/api/', apiLimiter);
 
 // ---------- validation helpers ----------
@@ -60,6 +81,26 @@ function sanitizeMemberIds(familyId, ids) {
 
 // Wrap async handlers so a rejected promise becomes a clean 500, never a hung socket.
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// Per-family row caps — bound storage growth AND the O(n)/O(n²) work that briefing
+// and conflict detection do over a family's rows. Table names come from this fixed
+// internal map (never user input), so interpolation here is safe.
+const ROW_CAPS = { events: 1000, tasks: 2000, grocery_items: 2000, goals: 500, moments: 3000, prayers: 2000 };
+function atCap(table, familyId) {
+  const max = ROW_CAPS[table];
+  if (!max) return false;
+  return db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE family_id = ?`).get(familyId).n >= max;
+}
+const CAP_MSG = 'This family has reached the maximum number of items. Please remove some before adding more.';
+
+// Premium gate: the family behind :familyId must be on the Premium plan. When
+// billing isn't configured yet (no Stripe keys), everything stays unlocked so
+// the app is fully usable in dev / pre-launch. Use after requireFamily.
+function requirePremium(req, res, next) {
+  if (!billingConfigured) return next();
+  if (isPremium(familyById(req.familyId))) return next();
+  return res.status(402).json({ error: 'premium_required', feature: 'This feature is part of Homillow Premium.' });
+}
 
 // ---------- Family Altar: daily devotional ----------
 // Curated, public-domain scripture (WEB/KJV) + a short family reflection prompt.
@@ -148,6 +189,11 @@ app.post('/api/families', requireAuth, (req, res) => {
   const displayName = str(req.body?.displayName, 80) || db.prepare('SELECT name FROM users WHERE id = ?').get(req.userId).name;
   const color = /^#[0-9a-fA-F]{6}$/.test(req.body?.color) ? req.body.color : '#6C8AE4';
   if (!name) return res.status(400).json({ error: 'Family name required' });
+  // Cap families a single user can create (each becomes its own Stripe customer +
+  // 7-day trial). Blocks one account from farming unlimited free trials. Being
+  // invited into others' families is unaffected — this only counts ones you own.
+  const owned = db.prepare("SELECT COUNT(*) AS n FROM memberships WHERE user_id = ? AND role = 'admin'").get(req.userId).n;
+  if (owned >= 5) return res.status(400).json({ error: 'You have reached the maximum number of families you can create.' });
   const tx = db.transaction(() => {
     const fam = db.prepare('INSERT INTO families (name) VALUES (?)').run(name);
     db.prepare('INSERT INTO memberships (family_id, user_id, role, display_name, color) VALUES (?,?,?,?,?)')
@@ -161,10 +207,35 @@ app.post('/api/families', requireAuth, (req, res) => {
 
 app.get('/api/families/:familyId', requireAuth, requireFamily, (req, res) => {
   const family = db.prepare('SELECT id, name FROM families WHERE id = ?').get(req.familyId);
-  res.json({ family, members: membersOf(req.familyId), me: req.membership });
+  res.json({ family, members: membersOf(req.familyId), me: req.membership, billing: planSnapshot(familyById(req.familyId)) });
 });
 
+// ---------- billing (Stripe subscriptions) ----------
+// Start a Checkout session to upgrade this family to Premium. Admin only.
+app.post('/api/families/:familyId/billing/checkout', billingLimiter, requireAuth, requireFamily, requireAdmin, wrap(async (req, res) => {
+  if (!billingConfigured) return res.status(503).json({ error: 'Billing not enabled yet' });
+  const plan = req.body?.plan === 'annual' ? 'annual' : 'monthly';
+  const user = db.prepare('SELECT email FROM users WHERE id = ?').get(req.userId);
+  const url = await createCheckout(familyById(req.familyId), user?.email, plan);
+  audit(req.familyId, req.userId, 'billing.checkout', plan);
+  res.json({ url });
+}));
+
+// Open the Stripe-hosted portal to manage/cancel. Admin only.
+app.post('/api/families/:familyId/billing/portal', billingLimiter, requireAuth, requireFamily, requireAdmin, wrap(async (req, res) => {
+  if (!billingConfigured) return res.status(503).json({ error: 'Billing not enabled yet' });
+  const url = await createPortal(familyById(req.familyId));
+  res.json({ url });
+}));
+
 app.post('/api/families/:familyId/invites', requireAuth, requireFamily, requireAdmin, (req, res) => {
+  // Early feedback: don't let a free family at the cap even mint an invite.
+  if (billingConfigured && !isPremium(familyById(req.familyId))) {
+    const count = db.prepare('SELECT COUNT(*) AS n FROM memberships WHERE family_id = ?').get(req.familyId).n;
+    if (count >= FREE_MEMBER_LIMIT) {
+      return res.status(402).json({ error: 'premium_required', feature: `Free families are limited to ${FREE_MEMBER_LIMIT} members. Upgrade to Homillow Premium to add more.` });
+    }
+  }
   const role = ROLES.includes(req.body?.role) ? req.body.role : 'adult';
   const code = crypto.randomBytes(6).toString('base64url');
   const expires = new Date(Date.now() + 7 * 864e5).toISOString();
@@ -184,6 +255,14 @@ app.post('/api/invites/accept', requireAuth, (req, res) => {
   }
   const already = db.prepare('SELECT id FROM memberships WHERE family_id = ? AND user_id = ?').get(invite.family_id, req.userId);
   if (already) return res.status(409).json({ error: 'Already in this family' });
+  // Free plan caps family size; Premium is unlimited. Enforced here because this
+  // is the moment a seat is actually taken.
+  if (billingConfigured && !isPremium(familyById(invite.family_id))) {
+    const count = db.prepare('SELECT COUNT(*) AS n FROM memberships WHERE family_id = ?').get(invite.family_id).n;
+    if (count >= FREE_MEMBER_LIMIT) {
+      return res.status(402).json({ error: 'premium_required', feature: `Free families are limited to ${FREE_MEMBER_LIMIT} members. Upgrade to Homillow Premium to add more.` });
+    }
+  }
   const tx = db.transaction(() => {
     db.prepare('INSERT INTO memberships (family_id, user_id, role, display_name, color) VALUES (?,?,?,?,?)')
       .run(invite.family_id, req.userId, invite.role, displayName, color);
@@ -217,6 +296,7 @@ app.get('/api/families/:familyId/goals', requireAuth, requireFamily, (req, res) 
   res.json({ goals: db.prepare('SELECT * FROM goals WHERE family_id = ? ORDER BY done, created_at DESC').all(req.familyId) });
 });
 app.post('/api/families/:familyId/goals', requireAuth, requireFamily, (req, res) => {
+  if (atCap('goals', req.familyId)) return res.status(400).json({ error: CAP_MSG });
   const title = str(req.body?.title, 120);
   if (!title) return res.status(400).json({ error: 'Goal title required' });
   const target = Number.isInteger(req.body?.target_num) ? Math.max(1, Math.min(100000, req.body.target_num)) : 1;
@@ -238,7 +318,7 @@ app.patch('/api/families/:familyId/goals/:id', requireAuth, requireFamily, (req,
   broadcast(req.familyId, { type: 'goals' });
   res.json({ goal: db.prepare('SELECT * FROM goals WHERE id = ?').get(id) });
 });
-app.delete('/api/families/:familyId/goals/:id', requireAuth, requireFamily, (req, res) => {
+app.delete('/api/families/:familyId/goals/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const info = db.prepare('DELETE FROM goals WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Goal not found' });
   broadcast(req.familyId, { type: 'goals' });
@@ -250,6 +330,7 @@ app.get('/api/families/:familyId/moments', requireAuth, requireFamily, (req, res
   res.json({ moments: db.prepare('SELECT * FROM moments WHERE family_id = ? ORDER BY COALESCE(moment_date, created_at) DESC').all(req.familyId) });
 });
 app.post('/api/families/:familyId/moments', requireAuth, requireFamily, (req, res) => {
+  if (atCap('moments', req.familyId)) return res.status(400).json({ error: CAP_MSG });
   const title = str(req.body?.title, 120);
   if (!title) return res.status(400).json({ error: 'Title required' });
   const emoji = str(req.body?.emoji, 8) || '✨';
@@ -259,7 +340,7 @@ app.post('/api/families/:familyId/moments', requireAuth, requireFamily, (req, re
   broadcast(req.familyId, { type: 'moments' });
   res.json({ moment: db.prepare('SELECT * FROM moments WHERE id = ?').get(info.lastInsertRowid) });
 });
-app.delete('/api/families/:familyId/moments/:id', requireAuth, requireFamily, (req, res) => {
+app.delete('/api/families/:familyId/moments/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const info = db.prepare('DELETE FROM moments WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Moment not found' });
   broadcast(req.familyId, { type: 'moments' });
@@ -270,7 +351,8 @@ app.delete('/api/families/:familyId/moments/:id', requireAuth, requireFamily, (r
 app.get('/api/families/:familyId/prayers', requireAuth, requireFamily, (req, res) => {
   res.json({ prayers: db.prepare('SELECT * FROM prayers WHERE family_id = ? ORDER BY answered, created_at DESC').all(req.familyId) });
 });
-app.post('/api/families/:familyId/prayers', requireAuth, requireFamily, (req, res) => {
+app.post('/api/families/:familyId/prayers', requireAuth, requireFamily, requirePremium, (req, res) => {
+  if (atCap('prayers', req.familyId)) return res.status(400).json({ error: CAP_MSG });
   const title = str(req.body?.title, 200);
   if (!title) return res.status(400).json({ error: 'Prayer request required' });
   const note = str(req.body?.note, 500);
@@ -280,7 +362,7 @@ app.post('/api/families/:familyId/prayers', requireAuth, requireFamily, (req, re
   broadcast(req.familyId, { type: 'prayers' });
   res.json({ prayer: db.prepare('SELECT * FROM prayers WHERE id = ?').get(info.lastInsertRowid) });
 });
-app.patch('/api/families/:familyId/prayers/:id', requireAuth, requireFamily, (req, res) => {
+app.patch('/api/families/:familyId/prayers/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const id = Number(req.params.id);
   const p = db.prepare('SELECT * FROM prayers WHERE id = ? AND family_id = ?').get(id, req.familyId);
   if (!p) return res.status(404).json({ error: 'Prayer not found' });
@@ -294,7 +376,7 @@ app.patch('/api/families/:familyId/prayers/:id', requireAuth, requireFamily, (re
   broadcast(req.familyId, { type: 'prayers' });
   res.json({ prayer: db.prepare('SELECT * FROM prayers WHERE id = ?').get(id) });
 });
-app.delete('/api/families/:familyId/prayers/:id', requireAuth, requireFamily, (req, res) => {
+app.delete('/api/families/:familyId/prayers/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const info = db.prepare('DELETE FROM prayers WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Prayer not found' });
   broadcast(req.familyId, { type: 'prayers' });
@@ -333,18 +415,34 @@ function expandOccurrences(ev, fromMs, toMs) {
   return out;
 }
 
+// Expand a set of events but cap the TOTAL occurrences per request. Without this,
+// a member can seed hundreds of daily-recurring events and make /events and
+// /briefing expand + O(n²) conflict-scan tens of millions of items, pinning the
+// single Node instance for every tenant.
+const MAX_OCCURRENCES = 2000;
+function expandAll(rows, from, to) {
+  const occ = [];
+  for (const e of rows) {
+    for (const o of expandOccurrences(e, from, to)) {
+      occ.push(o);
+      if (occ.length >= MAX_OCCURRENCES) return occ;
+    }
+  }
+  return occ;
+}
+
 app.get('/api/families/:familyId/events', requireAuth, requireFamily, (req, res) => {
   const from = isISO(req.query.from) ? Date.parse(req.query.from) : Date.now() - 30 * 864e5;
   const to = isISO(req.query.to) ? Date.parse(req.query.to) : Date.now() + 60 * 864e5;
   const rows = db.prepare('SELECT * FROM events WHERE family_id = ?').all(req.familyId).map(rowToEvent);
-  const occ = [];
-  for (const e of rows) for (const o of expandOccurrences(e, from, to)) occ.push(o);
+  const occ = expandAll(rows, from, to);
   occ.sort((a, b) => Date.parse(a.occ_start) - Date.parse(b.occ_start));
   res.json({ events: occ });
 });
 
 app.post('/api/families/:familyId/events', requireAuth, requireFamily, (req, res) => {
   const b = req.body || {};
+  if (atCap('events', req.familyId)) return res.status(400).json({ error: CAP_MSG });
   const title = str(b.title, 160);
   if (!title) return res.status(400).json({ error: 'Title required' });
   if (!isISO(b.start_utc) || !isISO(b.end_utc)) return res.status(400).json({ error: 'Valid start/end required' });
@@ -367,7 +465,7 @@ app.post('/api/families/:familyId/events', requireAuth, requireFamily, (req, res
   res.json({ event, conflicts: detectConflicts(req.familyId, event) });
 });
 
-app.patch('/api/families/:familyId/events/:id', requireAuth, requireFamily, (req, res) => {
+app.patch('/api/families/:familyId/events/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const id = Number(req.params.id);
   const ev = db.prepare('SELECT * FROM events WHERE id = ? AND family_id = ?').get(id, req.familyId);
   if (!ev) return res.status(404).json({ error: 'Event not found' });
@@ -396,7 +494,7 @@ app.patch('/api/families/:familyId/events/:id', requireAuth, requireFamily, (req
   res.json({ event: rowToEvent(db.prepare('SELECT * FROM events WHERE id = ?').get(id)) });
 });
 
-app.delete('/api/families/:familyId/events/:id', requireAuth, requireFamily, (req, res) => {
+app.delete('/api/families/:familyId/events/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const id = Number(req.params.id);
   const info = db.prepare('DELETE FROM events WHERE id = ? AND family_id = ?').run(id, req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Event not found' });
@@ -413,9 +511,14 @@ function detectConflicts(familyId, event) {
   const rows = db.prepare('SELECT * FROM events WHERE family_id = ? AND id != ?').all(familyId, event.id).map(rowToEvent);
   const occThis = expandOccurrences(event, from, to);
   const conflicts = [];
+  // Hard iteration budget so one event insert can never spin the shared event loop,
+  // regardless of how many recurring events share a member.
+  let budget = 50000;
   for (const other of rows) {
     if (!other.participantIds.some((p) => mine.has(p))) continue;
-    for (const a of occThis) for (const o of expandOccurrences(other, from, to)) {
+    const occOther = expandOccurrences(other, from, to);
+    for (const a of occThis) for (const o of occOther) {
+      if (--budget < 0) return conflicts.slice(0, 10);
       if (Date.parse(a.occ_start) < Date.parse(o.occ_end) && Date.parse(o.occ_start) < Date.parse(a.occ_end)) {
         conflicts.push({ id: other.id, title: other.title, start: o.occ_start });
       }
@@ -429,6 +532,7 @@ app.get('/api/families/:familyId/tasks', requireAuth, requireFamily, (req, res) 
   res.json({ tasks: db.prepare('SELECT * FROM tasks WHERE family_id = ? ORDER BY done, COALESCE(due_utc, created_at)').all(req.familyId) });
 });
 app.post('/api/families/:familyId/tasks', requireAuth, requireFamily, (req, res) => {
+  if (atCap('tasks', req.familyId)) return res.status(400).json({ error: CAP_MSG });
   const title = str(req.body?.title, 160);
   if (!title) return res.status(400).json({ error: 'Title required' });
   const assigned = sanitizeMemberIds(req.familyId, [req.body?.assigned_to])[0] ?? null;
@@ -444,13 +548,16 @@ app.patch('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, (req,
   const t = db.prepare('SELECT * FROM tasks WHERE id = ? AND family_id = ?').get(id, req.familyId);
   if (!t) return res.status(404).json({ error: 'Task not found' });
   const done = req.body?.done !== undefined ? (req.body.done ? 1 : 0) : t.done;
-  const title = req.body?.title !== undefined ? (str(req.body.title, 160) || t.title) : t.title;
-  const assigned = req.body?.assigned_to !== undefined ? (sanitizeMemberIds(req.familyId, [req.body.assigned_to])[0] ?? null) : t.assigned_to;
+  // Children may check chores off (advertised feature) but cannot retitle or
+  // reassign tasks — that's a destructive/shared-data edit reserved for adults.
+  const isChild = req.membership.role === 'child';
+  const title = (!isChild && req.body?.title !== undefined) ? (str(req.body.title, 160) || t.title) : t.title;
+  const assigned = (!isChild && req.body?.assigned_to !== undefined) ? (sanitizeMemberIds(req.familyId, [req.body.assigned_to])[0] ?? null) : t.assigned_to;
   db.prepare('UPDATE tasks SET done=?, title=?, assigned_to=? WHERE id=?').run(done, title, assigned, id);
   broadcast(req.familyId, { type: 'tasks' });
   res.json({ task: db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) });
 });
-app.delete('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, (req, res) => {
+app.delete('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const info = db.prepare('DELETE FROM tasks WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Task not found' });
   broadcast(req.familyId, { type: 'tasks' });
@@ -462,6 +569,7 @@ app.get('/api/families/:familyId/grocery', requireAuth, requireFamily, (req, res
   res.json({ items: db.prepare('SELECT * FROM grocery_items WHERE family_id = ? ORDER BY checked, category, created_at').all(req.familyId) });
 });
 app.post('/api/families/:familyId/grocery', requireAuth, requireFamily, (req, res) => {
+  if (atCap('grocery_items', req.familyId)) return res.status(400).json({ error: CAP_MSG });
   const name = str(req.body?.name, 120);
   if (!name) return res.status(400).json({ error: 'Item name required' });
   const category = GROCERY_CATS.includes(req.body?.category) ? req.body.category : 'other';
@@ -479,7 +587,7 @@ app.patch('/api/families/:familyId/grocery/:id', requireAuth, requireFamily, (re
   broadcast(req.familyId, { type: 'grocery' });
   res.json({ item: db.prepare('SELECT * FROM grocery_items WHERE id = ?').get(id) });
 });
-app.delete('/api/families/:familyId/grocery/:id', requireAuth, requireFamily, (req, res) => {
+app.delete('/api/families/:familyId/grocery/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const info = db.prepare('DELETE FROM grocery_items WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Item not found' });
   broadcast(req.familyId, { type: 'grocery' });
@@ -494,8 +602,7 @@ app.get('/api/families/:familyId/briefing', requireAuth, requireFamily, (req, re
   const dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
   const from = dayStart.getTime(), to = dayEnd.getTime();
   const rows = db.prepare('SELECT * FROM events WHERE family_id = ?').all(req.familyId).map(rowToEvent);
-  const occ = [];
-  for (const e of rows) for (const o of expandOccurrences(e, from, to)) occ.push(o);
+  const occ = expandAll(rows, from, to);
   occ.sort((a, b) => Date.parse(a.occ_start) - Date.parse(b.occ_start));
   const members = membersOf(req.familyId);
   const byMember = {};
@@ -537,7 +644,9 @@ function broadcast(familyId, msg) {
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
-  const token = url.searchParams.get('token');
+  // Auth token travels ONLY in the Sec-WebSocket-Protocol header, never in the URL,
+  // so it can't land in proxy/access logs or browser history. No query fallback.
+  const token = (req.headers['sec-websocket-protocol'] || '').split(',')[0].trim();
   const familyId = Number(url.searchParams.get('familyId'));
   const payload = token && verifyToken(token);
   if (!payload || !Number.isInteger(familyId)) { socket.destroy(); return; }
@@ -564,6 +673,16 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Something went wrong' });
 });
 
-server.listen(PORT, () => console.log(`Homillow running on http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Homillow running on http://localhost:${PORT}`);
+  // Billing config sanity — half-configured billing is a silent launch trap.
+  if (!billingConfigured) {
+    console.warn('[homillow] BILLING OFF: STRIPE_SECRET_KEY not set — paywall disabled, all Premium features are FREE. Do not launch paid tiers like this.');
+  } else if (!webhookConfigured) {
+    console.warn('[homillow] BILLING HALF-CONFIGURED: STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is MISSING — checkouts will succeed but NO customer can ever be upgraded to premium. Set the webhook secret before launch.');
+  } else {
+    console.log('[homillow] Billing fully configured (secret key + webhook).');
+  }
+});
 
 export { app, server };

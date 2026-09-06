@@ -63,8 +63,24 @@ input, select, textarea { font-family: inherit; font-size: 16px; }
 .btn.secondary { background: var(--accent); }
 .btn.ghost { background: transparent; color: var(--brand); border: 1px solid var(--brand); }
 .btn:active { transform: translateY(1px); }
+/* Primary CTA — used for upgrade / premium actions */
+.btn-primary {
+  width: 100%; padding: 14px; border: none; border-radius: 12px;
+  background: var(--brand); color: #fff; font-size: 16px; font-weight: 700; margin-top: 6px;
+}
+.btn-primary:active { transform: translateY(1px); }
+/* Premium upsell banner (Family Altar when locked) */
+.upgrade-banner {
+  margin: 4px 0 2px; padding: 16px; border-radius: 14px; text-align: center;
+  background: linear-gradient(135deg, rgba(108,138,228,.12), rgba(228,138,160,.12));
+  border: 1px solid var(--line);
+}
+.upgrade-banner .ub-title { font-weight: 800; color: var(--accent); font-size: 15px; }
+.upgrade-banner .ub-sub { color: var(--muted); font-size: 13px; margin: 6px 0 12px; line-height: 1.45; }
 .linkrow { text-align: center; margin-top: 14px; font-size: 14px; color: var(--muted); }
 .linkrow a { color: var(--brand); text-decoration: none; font-weight: 600; }
+.consent { text-align: center; margin-top: 12px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.consent a { color: var(--brand); text-decoration: none; font-weight: 600; }
 .err { background: #fdecea; color: var(--danger); padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-bottom: 12px; }
 
 /* ---------- app shell ---------- */

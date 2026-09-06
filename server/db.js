@@ -155,6 +155,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_family ON audit_logs(family_id, created_at)
 // Backfill for databases created before these columns existed (ignore if present).
 try { db.exec('ALTER TABLE memberships ADD COLUMN birthdate TEXT'); } catch {}
 
+// Billing: a family is the unit that subscribes. 'free' until a Stripe checkout
+// completes, then 'premium' while the subscription is active. All Stripe ids are
+// stored here so a webhook can resolve the family and flip the plan.
+try { db.exec("ALTER TABLE families ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'"); } catch {}
+try { db.exec('ALTER TABLE families ADD COLUMN subscription_status TEXT'); } catch {}
+try { db.exec('ALTER TABLE families ADD COLUMN stripe_customer_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE families ADD COLUMN stripe_subscription_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE families ADD COLUMN current_period_end TEXT'); } catch {}
+
 export function audit(familyId, userId, action, detail = '') {
   db.prepare('INSERT INTO audit_logs (family_id, user_id, action, detail) VALUES (?,?,?,?)')
     .run(familyId, userId, action, String(detail).slice(0, 500));

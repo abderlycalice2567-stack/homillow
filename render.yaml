@@ -16,6 +16,19 @@ services:
         generateValue: true   # Render generates a strong secret, kept out of code
       - key: DB_PATH
         value: /data/hearth.db
+      # Public URL used for Stripe Checkout redirects back into the app.
+      - key: APP_URL
+        value: https://homillow.com
+      # Stripe billing — set these in the Render dashboard (kept out of the repo).
+      # Until STRIPE_SECRET_KEY is set, the app runs with billing disabled (all free).
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_MONTHLY
+        sync: false
+      - key: STRIPE_PRICE_ANNUAL
+        sync: false
     disk:
       name: homillow-data     # persistent disk so the database survives redeploys
       mountPath: /data
