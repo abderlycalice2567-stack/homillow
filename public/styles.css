@@ -56,6 +56,14 @@ input, select, textarea { font-family: inherit; font-size: 16px; }
   background: #fff; color: var(--ink); outline: none;
 }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--brand); }
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 64px; }
+.pw-toggle {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  background: transparent; border: none; padding: 6px 8px; cursor: pointer;
+  font-size: 13px; font-weight: 700; color: var(--brand); border-radius: 8px;
+}
+.pw-toggle:hover { background: rgba(0,0,0,.04); }
 .btn {
   width: 100%; padding: 14px; border: none; border-radius: 12px; background: var(--brand);
   color: #fff; font-size: 16px; font-weight: 600; margin-top: 6px;

@@ -125,7 +125,12 @@ function renderAuth(mode = 'login') {
     <div id="err"></div>
     ${mode === 'register' ? `<div class="field"><label>Your name</label><input id="name" autocomplete="name" /></div>` : ''}
     <div class="field"><label>Email</label><input id="email" type="email" autocomplete="email" /></div>
-    <div class="field"><label>Password</label><input id="password" type="password" autocomplete="${mode === 'register' ? 'new-password' : 'current-password'}" /></div>
+    <div class="field"><label>Password</label>
+      <div class="pw-wrap">
+        <input id="password" type="password" autocomplete="${mode === 'register' ? 'new-password' : 'current-password'}" />
+        <button type="button" id="pw-toggle" class="pw-toggle" aria-label="Show password" aria-pressed="false">Show</button>
+      </div>
+    </div>
     <button class="btn" id="go">${mode === 'register' ? 'Create account' : 'Sign in'}</button>
     ${mode === 'register' ? `<div class="consent">By creating an account, you agree to Homillow's <a href="/terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</div>` : ''}
     <div class="linkrow">${mode === 'register'
@@ -133,6 +138,15 @@ function renderAuth(mode = 'login') {
       : `New to Homillow? <a id="swap">Create account</a>`}</div>
   </div></div></div>`;
   $('#swap').onclick = () => renderAuth(mode === 'register' ? 'login' : 'register');
+  $('#pw-toggle').onclick = () => {
+    const pw = $('#password'), btn = $('#pw-toggle');
+    const show = pw.type === 'password';
+    pw.type = show ? 'text' : 'password';
+    btn.textContent = show ? 'Hide' : 'Show';
+    btn.setAttribute('aria-pressed', String(show));
+    btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    pw.focus();
+  };
   $('#go').onclick = async () => {
     const email = $('#email').value, password = $('#password').value;
     const name = mode === 'register' ? $('#name').value : '';
