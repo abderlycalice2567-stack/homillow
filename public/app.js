@@ -661,9 +661,12 @@ function renderFamily(c) {
   }
   html += `<div class="card"><div class="card-head"><h3>⚙️ Settings</h3></div>
     <div class="setting-row" id="acct-row" style="cursor:pointer"><div class="li-main"><div class="t">Account</div><div class="li-sub">${esc(state.user?.email || 'Name, email & password')}</div></div><span class="chev">›</span></div>
+    <div class="setting-row" id="subs-row" style="cursor:pointer"><div class="li-main"><div class="t">Subscription</div><div class="li-sub">${isPremiumNow() ? 'Homillow Premium 💎' : 'Free plan'}</div></div><span class="chev">›</span></div>
     <div class="setting-row"><div class="li-main"><div class="t">Dark mode</div><div class="li-sub">Easy on the eyes at night</div></div>
     <button class="toggle ${document.documentElement.dataset.theme === 'dark' ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
-    <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button></div>`;
+    <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
+    <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
+    <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v11</div></div>`;
   c.innerHTML = html;
   c.querySelectorAll('[data-mid]').forEach((el) => el.onclick = () => openMemberModal(memberById(Number(el.dataset.mid))));
   if ($('#addgoal')) $('#addgoal').onclick = openGoalModal;
@@ -677,6 +680,8 @@ function renderFamily(c) {
   if ($('#addmoment')) $('#addmoment').onclick = openMomentModal;
   c.querySelectorAll('[data-momdel]').forEach((el) => el.onclick = async () => { if (confirm('Remove this moment?')) { await api(`/families/${state.familyId}/moments/${el.dataset.momdel}`, { method: 'DELETE' }); refresh(); } });
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
+  if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
+  if ($('#help-row')) $('#help-row').onclick = openHelpModal;
   if ($('#themetoggle')) $('#themetoggle').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); render(); };
   if ($('#up-month')) $('#up-month').onclick = () => startUpgrade('monthly');
   if ($('#up-year')) $('#up-year').onclick = () => startUpgrade('annual');
@@ -773,6 +778,55 @@ function openAccountModal() {
       toast('Your account has been deleted.'); render();
     } catch (e) { $('#acc-err', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
+}
+
+// Subscription management — always reachable from Settings. Reuses the same
+// Stripe checkout/portal flows as the promo card. Degrades gracefully when
+// billing isn't switched on yet (no Stripe keys): shows plan + "launching soon".
+function openSubscriptionModal() {
+  const b = state.billing || {};
+  const prem = !!b.premium;
+  const enabled = !!b.billing_enabled;
+  const admin = isAdmin();
+  let body = `<h3>Subscription</h3>
+    <div class="li-sub" style="margin-bottom:6px">Current plan: <b>${prem ? 'Homillow Premium 💎' : 'Free'}</b></div>`;
+  if (prem) {
+    body += `<div class="li-sub" style="margin-bottom:14px">Family Altar unlocked · unlimited members. Thank you for supporting Homillow. 🙏</div>`;
+    body += admin
+      ? `<button class="btn" id="sub-manage">Manage subscription</button>
+         <div class="muted small" style="margin-top:8px">Update your card, switch plans, or cancel — handled securely by Stripe.</div>`
+      : `<div class="muted small">Only a family admin can manage the subscription.</div>`;
+  } else {
+    body += `<div class="li-sub" style="margin-bottom:12px">Unlock the <b>Family Altar</b> (shared prayers + daily devotional) and <b>unlimited members</b>. Free covers calendar, tasks &amp; grocery for up to ${b.free_member_limit || 4} members.</div>
+      <div style="background:var(--card2,#f4f4f7);border-radius:12px;padding:12px;text-align:center;margin-bottom:4px">
+        <b>$6</b>/month · or <b>$60</b>/year <span class="muted small">(save 17%)</span><br>
+        <span class="muted small">7-day free trial</span></div>`;
+    if (!enabled) {
+      body += `<div class="muted small" style="margin-top:14px;text-align:center">💫 Premium is launching soon — you'll be able to upgrade right here.</div>`;
+    } else if (admin) {
+      body += `<div class="row2" style="margin-top:14px">
+        <button class="btn-primary" id="sub-month" style="flex:1">Go Monthly</button>
+        <button class="btn secondary" id="sub-year" style="flex:1">Go Yearly</button></div>`;
+    } else {
+      body += `<div class="muted small" style="margin-top:14px">Ask a family admin to upgrade.</div>`;
+    }
+  }
+  const back = modal(body);
+  if ($('#sub-manage', back)) $('#sub-manage', back).onclick = () => { back.remove(); openBillingPortal(); };
+  if ($('#sub-month', back)) $('#sub-month', back).onclick = () => { back.remove(); startUpgrade('monthly'); };
+  if ($('#sub-year', back)) $('#sub-year', back).onclick = () => { back.remove(); startUpgrade('annual'); };
+}
+
+// Help & support — contact + legal, everything a paying customer expects to find.
+function openHelpModal() {
+  modal(`<h3>Help &amp; support</h3>
+    <div class="li-sub" style="margin-bottom:14px">Questions, feedback, or trouble with your account? We're here to help.</div>
+    <a class="btn" href="mailto:homillow.family@gmail.com?subject=Homillow%20support" style="display:block;text-align:center;text-decoration:none">📧 Email support</a>
+    <div class="row2" style="margin-top:12px">
+      <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
+      <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
+    </div>
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v11<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
