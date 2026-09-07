@@ -276,7 +276,15 @@ body[data-tod="evening"]::before {
 html[data-theme="dark"] {
   --bg: #141b21; --card: #1e262e; --ink: #e9eef2; --muted: #98a6b0; --line: #2c3742;
   --brand-soft: #3a2a22; --shadow: 0 8px 26px rgba(0,0,0,.5);
+  /* Accent is deep navy in light mode (headings + numbers). On a dark background
+     that reads as invisible, so lift it to a soft light tone here. */
+  --accent: #dbe7f0;
 }
+/* --accent doubles as a *background* on a few elements (white text on navy). Now
+   that it's light in dark mode, re-base those so text stays legible. */
+html[data-theme="dark"] .btn.secondary { background: #2c3742; color: #e9eef2; }
+html[data-theme="dark"] .toast { background: #2c3742; color: #fff; }
+html[data-theme="dark"] .weather { background: #182027; border-color: #2c3742; }
 html[data-theme="dark"] body {
   background:
     radial-gradient(1000px 600px at 12% -8%, #22303b 0%, rgba(34,48,59,0) 55%),

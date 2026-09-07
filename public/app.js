@@ -666,7 +666,7 @@ function renderFamily(c) {
     <button class="toggle ${document.documentElement.dataset.theme === 'dark' ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
     <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
     <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-    <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v11</div></div>`;
+    <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v12</div></div>`;
   c.innerHTML = html;
   c.querySelectorAll('[data-mid]').forEach((el) => el.onclick = () => openMemberModal(memberById(Number(el.dataset.mid))));
   if ($('#addgoal')) $('#addgoal').onclick = openGoalModal;
@@ -798,7 +798,7 @@ function openSubscriptionModal() {
       : `<div class="muted small">Only a family admin can manage the subscription.</div>`;
   } else {
     body += `<div class="li-sub" style="margin-bottom:12px">Unlock the <b>Family Altar</b> (shared prayers + daily devotional) and <b>unlimited members</b>. Free covers calendar, tasks &amp; grocery for up to ${b.free_member_limit || 4} members.</div>
-      <div style="background:var(--card2,#f4f4f7);border-radius:12px;padding:12px;text-align:center;margin-bottom:4px">
+      <div style="background:var(--brand-soft);border-radius:12px;padding:12px;text-align:center;margin-bottom:4px;color:var(--ink)">
         <b>$6</b>/month · or <b>$60</b>/year <span class="muted small">(save 17%)</span><br>
         <span class="muted small">7-day free trial</span></div>`;
     if (!enabled) {
@@ -826,7 +826,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v11<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v12<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
