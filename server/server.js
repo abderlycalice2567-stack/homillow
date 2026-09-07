@@ -183,6 +183,86 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json({ user, families });
 });
 
+// ---------- account self-service (Settings) ----------
+// Change your own name / email / password. The current password is ALWAYS required:
+// it re-authenticates the session before any sensitive change, so a stolen 7-day
+// token alone can't take over the account. Rate-limited like the other auth routes.
+app.patch('/api/me', authLimiter, requireAuth, wrap(async (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  if (currentPassword.length > 200 || !(await verifyPassword(currentPassword, user.password_hash))) {
+    return res.status(403).json({ error: 'Current password is incorrect' });
+  }
+
+  // Only the columns we explicitly whitelist here can be written — the keys are
+  // never taken from user input, so the dynamic UPDATE below can't be injected.
+  const updates = {};
+  if (req.body?.name !== undefined) {
+    const name = str(req.body.name, 80);
+    if (!name) return res.status(400).json({ error: 'Name cannot be empty' });
+    updates.name = name;
+  }
+  if (req.body?.email !== undefined) {
+    const email = str(req.body.email, 254).toLowerCase();
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Valid email required' });
+    if (email !== user.email) {
+      const taken = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(email, user.id);
+      if (taken) return res.status(409).json({ error: 'That email is already in use' });
+      updates.email = email;
+    }
+  }
+  if (req.body?.newPassword !== undefined) {
+    const np = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
+    if (np.length < 8) return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    if (np.length > 200) return res.status(400).json({ error: 'New password too long (max 200 characters)' });
+    updates.password_hash = await hashPassword(np);
+  }
+
+  const keys = Object.keys(updates);
+  if (keys.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+  db.prepare(`UPDATE users SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`)
+    .run(...keys.map(k => updates[k]), user.id);
+
+  const fresh = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(user.id);
+  // The display name is baked into the JWT, so reissue it to keep the client in sync.
+  res.json({ token: issueToken(fresh), user: fresh });
+}));
+
+// Permanently delete your own account (requires the current password). Families you
+// are the SOLE member of are removed with all their data (cascades). If you still
+// share a family with other members, we stop and ask you to hand those off first —
+// so one person leaving can't silently wipe a household everyone else depends on.
+app.delete('/api/me', authLimiter, requireAuth, wrap(async (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  if (currentPassword.length > 200 || !(await verifyPassword(currentPassword, user.password_hash))) {
+    return res.status(403).json({ error: 'Current password is incorrect' });
+  }
+
+  const families = db.prepare('SELECT family_id FROM memberships WHERE user_id = ?').all(user.id);
+  const solo = [];
+  for (const { family_id } of families) {
+    const count = db.prepare('SELECT COUNT(*) AS c FROM memberships WHERE family_id = ?').get(family_id).c;
+    if (count > 1) {
+      return res.status(409).json({ error: 'You still share a family with other members. Remove them or leave that family before deleting your account.' });
+    }
+    solo.push(family_id);
+  }
+
+  db.transaction(() => {
+    // Deleting a family cascades its events/tasks/prayers/grocery/invites/memberships.
+    for (const fid of solo) db.prepare('DELETE FROM families WHERE id = ?').run(fid);
+    db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+  })();
+
+  res.json({ ok: true });
+}));
+
 // ---------- family routes ----------
 app.post('/api/families', requireAuth, (req, res) => {
   const name = str(req.body?.name, 80);

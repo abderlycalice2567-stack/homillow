@@ -660,6 +660,7 @@ function renderFamily(c) {
     html += `</div>`;
   }
   html += `<div class="card"><div class="card-head"><h3>⚙️ Settings</h3></div>
+    <div class="setting-row" id="acct-row" style="cursor:pointer"><div class="li-main"><div class="t">Account</div><div class="li-sub">${esc(state.user?.email || 'Name, email & password')}</div></div><span class="chev">›</span></div>
     <div class="setting-row"><div class="li-main"><div class="t">Dark mode</div><div class="li-sub">Easy on the eyes at night</div></div>
     <button class="toggle ${document.documentElement.dataset.theme === 'dark' ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
     <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button></div>`;
@@ -675,6 +676,7 @@ function renderFamily(c) {
   c.querySelectorAll('[data-goaldel]').forEach((el) => el.onclick = async () => { await api(`/families/${state.familyId}/goals/${el.dataset.goaldel}`, { method: 'DELETE' }); refresh(); });
   if ($('#addmoment')) $('#addmoment').onclick = openMomentModal;
   c.querySelectorAll('[data-momdel]').forEach((el) => el.onclick = async () => { if (confirm('Remove this moment?')) { await api(`/families/${state.familyId}/moments/${el.dataset.momdel}`, { method: 'DELETE' }); refresh(); } });
+  if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#themetoggle')) $('#themetoggle').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); render(); };
   if ($('#up-month')) $('#up-month').onclick = () => startUpgrade('monthly');
   if ($('#up-year')) $('#up-year').onclick = () => startUpgrade('annual');
@@ -718,6 +720,61 @@ function onFab() {
   if (state.view === 'altar') { $('#padd')?.focus(); return; }
   openEventModal();
 }
+// Account settings — change your own name / email / password, or delete the account.
+// Current password is required for every action (matches the server), so the form
+// always asks for it before Save or Delete will do anything.
+function openAccountModal() {
+  const u = state.user || {};
+  const back = modal(`
+    <h3>Account settings</h3>
+    <div id="acc-err"></div>
+    <div class="field"><label>Display name</label><input id="acc-name" value="${esc(u.name || '')}" maxlength="80" autocomplete="name" /></div>
+    <div class="field"><label>Email</label><input id="acc-email" type="email" value="${esc(u.email || '')}" maxlength="254" autocomplete="email" /></div>
+    <div class="field"><label>New password <span class="muted small">— leave blank to keep current</span></label>
+      <input id="acc-newpw" type="password" placeholder="At least 8 characters" autocomplete="new-password" /></div>
+    <div class="field"><label>Current password <span class="muted small">— required to save</span></label>
+      <input id="acc-curpw" type="password" placeholder="Confirm it's you" autocomplete="current-password" /></div>
+    <button class="btn" id="acc-save">Save changes</button>
+    <div style="margin-top:18px;border-top:1px solid var(--line,#eee);padding-top:14px">
+      <div class="li-sub" style="margin-bottom:8px">Permanently delete your account and any family only you belong to. This can't be undone.</div>
+      <button class="btn ghost" id="acc-del" style="color:#c0392b">Delete my account</button>
+    </div>`);
+
+  $('#acc-save', back).onclick = async () => {
+    const cur = $('#acc-curpw', back).value;
+    if (!cur) { $('#acc-err', back).innerHTML = `<div class="err">Enter your current password to save changes.</div>`; return; }
+    const body = { currentPassword: cur };
+    const name = $('#acc-name', back).value.trim();
+    const email = $('#acc-email', back).value.trim();
+    const newpw = $('#acc-newpw', back).value;
+    if (name !== (u.name || '')) body.name = name;
+    if (email !== (u.email || '')) body.email = email;
+    if (newpw) body.newPassword = newpw;
+    if (body.name === undefined && body.email === undefined && body.newPassword === undefined) {
+      $('#acc-err', back).innerHTML = `<div class="err">Nothing to change yet.</div>`; return;
+    }
+    try {
+      const out = await api('/me', { method: 'PATCH', body });
+      if (out.token) setToken(out.token);
+      state.user = out.user;
+      back.remove(); toast('Account updated ✓'); render();
+    } catch (e) { $('#acc-err', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+
+  $('#acc-del', back).onclick = async () => {
+    const cur = $('#acc-curpw', back).value;
+    if (!cur) { $('#acc-err', back).innerHTML = `<div class="err">Enter your current password above to delete your account.</div>`; return; }
+    if (!confirm('Delete your account permanently? This cannot be undone.')) return;
+    try {
+      await api('/me', { method: 'DELETE', body: { currentPassword: cur } });
+      back.remove();
+      setToken(null); localStorage.removeItem('hearth_family'); state.familyId = null; state.user = null;
+      if (state.ws) state.ws.close();
+      toast('Your account has been deleted.'); render();
+    } catch (e) { $('#acc-err', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+}
+
 function modal(inner) {
   const back = document.createElement('div'); back.className = 'modal-back';
   back.innerHTML = `<div class="modal">${inner}</div>`;
