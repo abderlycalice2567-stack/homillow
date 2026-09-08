@@ -354,15 +354,16 @@ function render() {
   app.innerHTML = `
     <div class="app-head">
       <div><h2>${headTitle()}</h2><div class="fam">${esc(state.familyName || '')}</div></div>
-      <div class="avatar" style="background:${esc(meColor)}">${esc(initials(state.me?.display_name))}</div>
+      <div class="avatar" id="me-avatar" title="Settings" style="background:${esc(meColor)};cursor:pointer">${esc(initials(state.me?.display_name))}</div>
     </div>
     ${verifyBanner()}
     <div class="content" id="content"></div>
-    <button class="fab" id="fab">+</button>
+    ${state.view === 'settings' ? '' : '<button class="fab" id="fab">+</button>'}
     <div class="tabbar">
       ${tab('home', '🏠', 'Home')}${tab('calendar', '📅', 'Calendar')}${tab('tasks', '✅', 'Tasks')}${tab('grocery', '🛒', 'Grocery')}${tab('altar', '🙏', 'Altar')}${tab('family', '👨‍👩‍👧', 'Family')}
     </div>`;
-  $('#fab').onclick = onFab;
+  if ($('#fab')) $('#fab').onclick = onFab;
+  if ($('#me-avatar')) $('#me-avatar').onclick = () => { if (state.view !== 'settings') state._prevView = state.view; state.view = 'settings'; render(); };
   if ($('#resend-verify')) $('#resend-verify').onclick = async (e) => {
     const a = e.currentTarget; a.textContent = 'Sending…';
     try { await api('/auth/resend-verification', { method: 'POST' }); toast('Confirmation email sent 📧'); a.textContent = 'Sent ✓'; }
@@ -377,6 +378,7 @@ function render() {
   else if (state.view === 'grocery') renderGrocery(c);
   else if (state.view === 'altar') renderAltar(c);
   else if (state.view === 'family') renderFamily(c);
+  else if (state.view === 'settings') renderSettings(c);
 }
 function tab(v, ic, label) { return `<button data-v="${v}" class="${state.view === v ? 'active' : ''}"><span class="ic">${ic}</span>${label}</button>`; }
 function headTitle() {
@@ -387,7 +389,7 @@ function headTitle() {
     const nm = (state.me?.display_name || '').split(' ')[0];
     return `${g}${nm ? ', ' + esc(nm) : ''} ${emo}`;
   }
-  return { calendar: 'Calendar', tasks: 'Tasks & Chores', grocery: 'Grocery', altar: 'Family Altar', family: 'Family' }[state.view] || 'Homillow';
+  return { calendar: 'Calendar', tasks: 'Tasks & Chores', grocery: 'Grocery', altar: 'Family Altar', family: 'Family', settings: 'Settings' }[state.view] || 'Homillow';
 }
 
 const CAT_ICON = { work: '💼', school: '🎒', sports: '⚽', medical: '🩺', church: '⛪', family: '🏡', couple: '❤️', personal: '⭐', household: '🧹', important: '❗' };
@@ -742,14 +744,6 @@ function renderFamily(c) {
     }
     html += `</div>`;
   }
-  html += `<div class="card"><div class="card-head"><h3>⚙️ Settings</h3></div>
-    <div class="setting-row" id="acct-row" style="cursor:pointer"><div class="li-main"><div class="t">Account</div><div class="li-sub">${esc(state.user?.email || 'Name, email & password')}</div></div><span class="chev">›</span></div>
-    <div class="setting-row" id="subs-row" style="cursor:pointer"><div class="li-main"><div class="t">Subscription</div><div class="li-sub">${isPremiumNow() ? 'Homillow Premium 💎' : 'Free plan'}</div></div><span class="chev">›</span></div>
-    <div class="setting-row"><div class="li-main"><div class="t">Dark mode</div><div class="li-sub">Easy on the eyes at night</div></div>
-    <button class="toggle ${document.documentElement.dataset.theme === 'dark' ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
-    <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
-    <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-    <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v12</div></div>`;
   c.innerHTML = html;
   c.querySelectorAll('[data-mid]').forEach((el) => el.onclick = () => openMemberModal(memberById(Number(el.dataset.mid))));
   if ($('#addgoal')) $('#addgoal').onclick = openGoalModal;
@@ -762,10 +756,6 @@ function renderFamily(c) {
   c.querySelectorAll('[data-goaldel]').forEach((el) => el.onclick = async () => { await api(`/families/${state.familyId}/goals/${el.dataset.goaldel}`, { method: 'DELETE' }); refresh(); });
   if ($('#addmoment')) $('#addmoment').onclick = openMomentModal;
   c.querySelectorAll('[data-momdel]').forEach((el) => el.onclick = async () => { if (confirm('Remove this moment?')) { await api(`/families/${state.familyId}/moments/${el.dataset.momdel}`, { method: 'DELETE' }); refresh(); } });
-  if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
-  if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
-  if ($('#help-row')) $('#help-row').onclick = openHelpModal;
-  if ($('#themetoggle')) $('#themetoggle').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); render(); };
   if ($('#up-month')) $('#up-month').onclick = () => startUpgrade('monthly');
   if ($('#up-year')) $('#up-year').onclick = () => startUpgrade('annual');
   if ($('#managebill')) $('#managebill').onclick = openBillingPortal;
@@ -798,6 +788,24 @@ function renderFamily(c) {
     $('#copyinv').onclick = async () => { await copyText(msg); toast('Invite copied ✓'); };
   };
   if ($('#addcouple')) $('#addcouple').onclick = () => openEventModal('couple');
+}
+
+// ---------- settings (opened from the top-right avatar — the conventional spot) ----------
+function renderSettings(c) {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  c.innerHTML = `
+    <div class="card"><div class="card-head"><h3>⚙️ Settings</h3></div>
+      <div class="setting-row" id="acct-row" style="cursor:pointer"><div class="li-main"><div class="t">Account</div><div class="li-sub">${esc(state.user?.email || 'Name, email & password')}</div></div><span class="chev">›</span></div>
+      <div class="setting-row" id="subs-row" style="cursor:pointer"><div class="li-main"><div class="t">Subscription</div><div class="li-sub">${isPremiumNow() ? 'Homillow Premium 💎' : 'Free plan'}</div></div><span class="chev">›</span></div>
+      <div class="setting-row"><div class="li-main"><div class="t">Dark mode</div><div class="li-sub">Easy on the eyes at night</div></div>
+      <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
+      <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
+      <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v14</div></div>`;
+  if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
+  if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
+  if ($('#help-row')) $('#help-row').onclick = openHelpModal;
+  if ($('#themetoggle')) $('#themetoggle').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); render(); };
   $('#logout').onclick = () => { setToken(null); localStorage.removeItem('hearth_family'); state.familyId = null; state.user = null; if (state.ws) state.ws.close(); render(); };
 }
 
@@ -909,7 +917,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v12<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v14<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
