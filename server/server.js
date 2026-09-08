@@ -697,7 +697,9 @@ app.patch('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, (req,
   const isChild = req.membership.role === 'child';
   const title = (!isChild && req.body?.title !== undefined) ? (str(req.body.title, 160) || t.title) : t.title;
   const assigned = (!isChild && req.body?.assigned_to !== undefined) ? (sanitizeMemberIds(req.familyId, [req.body.assigned_to])[0] ?? null) : t.assigned_to;
-  db.prepare('UPDATE tasks SET done=?, title=?, assigned_to=? WHERE id=?').run(done, title, assigned, id);
+  const due = (!isChild && req.body?.due_utc !== undefined) ? (isISO(req.body.due_utc) ? req.body.due_utc : null) : t.due_utc;
+  const points = (!isChild && req.body?.points !== undefined) ? Math.max(0, Math.min(100000, Math.trunc(Number(req.body.points)) || 0)) : t.points;
+  db.prepare('UPDATE tasks SET done=?, title=?, assigned_to=?, due_utc=?, points=? WHERE id=?').run(done, title, assigned, due, points, id);
   broadcast(req.familyId, { type: 'tasks' });
   res.json({ task: db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) });
 });

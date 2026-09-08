@@ -1,5 +1,5 @@
 // Homillow service worker — offline shell cache (app data still requires network to sync).
-const CACHE = 'homillow-v14';
+const CACHE = 'homillow-v15';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.json'];
 
 self.addEventListener('install', (e) => {

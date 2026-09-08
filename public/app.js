@@ -516,7 +516,7 @@ function renderTasks(c) {
     const m = t.assigned_to ? memberById(t.assigned_to) : null;
     return `<div class="list-item">
       <div class="check ${t.done ? 'on' : ''}" data-toggle="${t.id}">${t.done ? '✓' : ''}</div>
-      <div class="li-main ${t.done ? 'done' : ''}"><div class="t">${esc(t.title)}</div>
+      <div class="li-main ${t.done ? 'done' : ''}" data-edit="${t.id}" style="cursor:pointer"><div class="t">${esc(t.title)}</div>
       <div class="li-sub">${m ? esc(m.display_name) : 'Unassigned'}${t.due_utc ? ' · due ' + esc(new Date(t.due_utc).toLocaleDateString()) : ''}${t.points ? ' · ⭐' + t.points : ''}</div></div>
       <button class="trash" data-del="${t.id}">🗑</button></div>`;
   }).join('')}</div>`;
@@ -524,6 +524,13 @@ function renderTasks(c) {
     const t = ts.find((x) => x.id === Number(el.dataset.toggle));
     if (!t.done) { celebrate(e.clientX, e.clientY); toast(pick(DONE_MSG)); }
     await api(`/families/${state.familyId}/tasks/${t.id}`, { method: 'PATCH', body: { done: !t.done } }); refresh();
+  });
+  // Tap a task's title/body to reopen it for editing (children can't edit shared items).
+  c.querySelectorAll('[data-edit]').forEach((el) => el.onclick = () => {
+    const t = ts.find((x) => x.id === Number(el.dataset.edit));
+    if (!t) return;
+    if (state.me?.role === 'child') return toast('Ask a parent to change this task');
+    openTaskModal(t);
   });
   c.querySelectorAll('[data-del]').forEach((el) => el.onclick = async () => {
     await api(`/families/${state.familyId}/tasks/${el.dataset.del}`, { method: 'DELETE' }); refresh();
@@ -801,7 +808,7 @@ function renderSettings(c) {
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v14</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v15</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
   if ($('#help-row')) $('#help-row').onclick = openHelpModal;
@@ -917,7 +924,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v14<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v15<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
@@ -986,16 +993,20 @@ async function openEvent(id) {
     <button class="btn ghost" id="del">Delete event</button>`);
   $('#del', back).onclick = async () => { await api(`/families/${state.familyId}/events/${e.id}`, { method: 'DELETE' }); back.remove(); toast('Deleted'); refresh(); };
 }
-function openTaskModal() {
+// Create a task, or — when passed an existing task — reopen it prefilled for editing.
+function openTaskModal(task = null) {
+  const editing = !!task;
+  const dueVal = task?.due_utc ? new Date(task.due_utc).toISOString().slice(0, 10) : '';
   const back = modal(`
-    <h3>New task / chore</h3><div id="merr"></div>
-    <div class="field"><label>Task</label><input id="t-title" placeholder="Take out trash" /></div>
-    <div class="field"><label>Assign to</label>${memberPicker()}</div>
+    <h3>${editing ? 'Edit task / chore' : 'New task / chore'}</h3><div id="merr"></div>
+    <div class="field"><label>Task</label><input id="t-title" placeholder="Take out trash" value="${editing ? esc(task.title) : ''}" /></div>
+    <div class="field"><label>Assign to</label>${memberPicker(editing && task.assigned_to ? [task.assigned_to] : [])}</div>
     <div class="row2">
-      <div class="field"><label>Due (optional)</label><input id="t-due" type="date" /></div>
-      <div class="field"><label>Points (optional)</label><input id="t-pts" type="number" min="0" value="0" /></div>
+      <div class="field"><label>Due (optional)</label><input id="t-due" type="date" value="${dueVal}" /></div>
+      <div class="field"><label>Points (optional)</label><input id="t-pts" type="number" min="0" value="${editing ? (task.points || 0) : 0}" /></div>
     </div>
-    <button class="btn" id="t-save">Add task</button>`);
+    <button class="btn" id="t-save">${editing ? 'Save changes' : 'Add task'}</button>
+    ${editing ? '<button class="btn ghost" id="t-del" style="margin-top:10px">Delete task</button>' : ''}`);
   // single-assignee: clicking one clears others
   back.querySelectorAll('#mp .m').forEach((el) => el.onclick = () => {
     const was = el.classList.contains('sel');
@@ -1005,13 +1016,20 @@ function openTaskModal() {
   $('#t-save', back).onclick = async () => {
     try {
       const ids = pickedIds(back);
-      await api(`/families/${state.familyId}/tasks`, { method: 'POST', body: {
+      const body = {
         title: $('#t-title', back).value, assigned_to: ids[0] || null,
         due_utc: $('#t-due', back).value ? new Date($('#t-due', back).value).toISOString() : null,
         points: Number($('#t-pts', back).value) || 0,
-      }});
-      back.remove(); toast('Task added'); refresh();
+      };
+      if (editing) await api(`/families/${state.familyId}/tasks/${task.id}`, { method: 'PATCH', body });
+      else await api(`/families/${state.familyId}/tasks`, { method: 'POST', body });
+      back.remove(); toast(editing ? 'Task updated ✓' : 'Task added'); refresh();
     } catch (e) { $('#merr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  if (editing) $('#t-del', back).onclick = async () => {
+    if (!confirm('Delete this task?')) return;
+    try { await api(`/families/${state.familyId}/tasks/${task.id}`, { method: 'DELETE' }); back.remove(); toast('Task deleted'); refresh(); }
+    catch (e) { $('#merr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
 }
 
