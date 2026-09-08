@@ -150,10 +150,28 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_audit_family ON audit_logs(family_id, created_at);
+
+-- Single-use tokens for email verification and password reset. Only the SHA-256
+-- hash of each token is stored (never the raw value), so a DB leak can't be
+-- replayed against an account. Rows cascade away if the user is deleted.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL CHECK (kind IN ('verify','reset')),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  used_at    TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(user_id, kind);
 `);
 
 // Backfill for databases created before these columns existed (ignore if present).
 try { db.exec('ALTER TABLE memberships ADD COLUMN birthdate TEXT'); } catch {}
+
+// Email verification flag on the user. Defaults to 0 (unverified); existing rows
+// created before the email flow shipped will read 0 until they confirm.
+try { db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 // Billing: a family is the unit that subscribes. 'free' until a Stripe checkout
 // completes, then 'premium' while the subscription is active. All Stripe ids are

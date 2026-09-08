@@ -338,3 +338,11 @@ html[data-theme="dark"] .toggle { background: #3a4650; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .codebox { font-family: ui-monospace, Menlo, monospace; background: var(--brand-soft); color: var(--brand); padding: 12px; border-radius: 10px; text-align: center; font-size: 18px; letter-spacing: 1px; word-break: break-all; }
+
+/* Email-confirmation nudge — shown until the account's email is verified. */
+.verify-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  background: var(--brand-soft); color: #7a3d1e; border: 1px solid rgba(194,88,47,.35);
+  border-radius: 12px; padding: 10px 14px; margin: 0 16px 12px; font-size: 13px; }
+.verify-bar .verify-actions { white-space: nowrap; color: var(--muted); }
+.verify-bar .verify-actions a { color: var(--brand); cursor: pointer; font-weight: 700; }
+html[data-theme="dark"] .verify-bar { background: #33261c; color: #f0d3c2; border-color: #5a4030; }

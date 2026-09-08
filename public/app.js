@@ -136,8 +136,10 @@ function renderAuth(mode = 'login') {
     <div class="linkrow">${mode === 'register'
       ? `Already have an account? <a id="swap">Sign in</a>`
       : `New to Homillow? <a id="swap">Create account</a>`}</div>
+    ${mode === 'login' ? `<div class="linkrow"><a id="forgot">Forgot password?</a></div>` : ''}
   </div></div></div>`;
   $('#swap').onclick = () => renderAuth(mode === 'register' ? 'login' : 'register');
+  if ($('#forgot')) $('#forgot').onclick = renderForgot;
   $('#pw-toggle').onclick = () => {
     const pw = $('#password'), btn = $('#pw-toggle');
     const show = pw.type === 'password';
@@ -153,6 +155,70 @@ function renderAuth(mode = 'login') {
     try {
       const out = await api(mode === 'register' ? '/register' : '/login', { method: 'POST', body: { email, password, name } });
       setToken(out.token); state.user = out.user; await boot();
+    } catch (e) { $('#err').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+}
+
+// ---------- password reset ----------
+// Step 1: ask for the email. The server always replies the same way (no account
+// enumeration), so the UI shows one generic confirmation regardless.
+function renderForgot() {
+  app.innerHTML = `
+  <div class="screen"><div class="center-wrap"><div class="auth-card">
+    <div class="brandmark"><div class="logo">🔑</div><h1>Reset password</h1><p>We'll email you a link to set a new one.</p></div>
+    <div id="err"></div>
+    <div class="field"><label>Email</label><input id="email" type="email" autocomplete="email" /></div>
+    <button class="btn" id="send">Send reset link</button>
+    <div class="linkrow"><a id="back">Back to sign in</a></div>
+  </div></div></div>`;
+  $('#back').onclick = () => renderAuth('login');
+  $('#send').onclick = async () => {
+    const email = $('#email').value;
+    try {
+      const out = await api('/auth/forgot-password', { method: 'POST', body: { email } });
+      app.innerHTML = `
+      <div class="screen"><div class="center-wrap"><div class="auth-card">
+        <div class="brandmark"><div class="logo">📧</div><h1>Check your email</h1>
+          <p>${esc(out.message || "If that email has a Homillow account, a reset link is on its way.")}</p></div>
+        <p style="color:var(--muted);font-size:13px;text-align:center;">The link expires in 1 hour. Don't forget to check your spam folder.</p>
+        <div class="linkrow"><a id="back">Back to sign in</a></div>
+      </div></div></div>`;
+      $('#back').onclick = () => renderAuth('login');
+    } catch (e) { $('#err').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+}
+
+// Step 2: landed here from the emailed link (/?reset=<token>). Set the new password.
+function renderReset(token) {
+  app.innerHTML = `
+  <div class="screen"><div class="center-wrap"><div class="auth-card">
+    <div class="brandmark"><div class="logo">🔐</div><h1>Choose a new password</h1><p>Almost done — pick a new password.</p></div>
+    <div id="err"></div>
+    <div class="field"><label>New password</label>
+      <div class="pw-wrap">
+        <input id="password" type="password" autocomplete="new-password" />
+        <button type="button" id="pw-toggle" class="pw-toggle" aria-label="Show password" aria-pressed="false">Show</button>
+      </div>
+    </div>
+    <button class="btn" id="save">Set new password</button>
+    <div class="linkrow"><a id="back">Back to sign in</a></div>
+  </div></div></div>`;
+  $('#back').onclick = () => { history.replaceState(null, '', '/'); renderAuth('login'); };
+  $('#pw-toggle').onclick = () => {
+    const pw = $('#password'), btn = $('#pw-toggle');
+    const show = pw.type === 'password';
+    pw.type = show ? 'text' : 'password';
+    btn.textContent = show ? 'Hide' : 'Show';
+    btn.setAttribute('aria-pressed', String(show));
+    pw.focus();
+  };
+  $('#save').onclick = async () => {
+    const password = $('#password').value;
+    try {
+      await api('/auth/reset-password', { method: 'POST', body: { token, newPassword: password } });
+      history.replaceState(null, '', '/');
+      toast('Password updated — please sign in ✅');
+      renderAuth('login');
     } catch (e) { $('#err').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
 }
@@ -268,6 +334,16 @@ function promptUpgrade(message) {
   if (confirm(`${msg}\n\nUpgrade to Homillow Premium now?`)) startUpgrade('monthly');
 }
 
+// A gentle nudge to confirm email — only while the account is unverified. Dismissible
+// per session so it never nags; the account works fully either way.
+function verifyBanner() {
+  if (!state.user || state.user.email_verified || state.verifyDismissed) return '';
+  return `<div class="verify-bar" id="verify-bar">
+    <span>📧 Please confirm your email to secure your account.</span>
+    <span class="verify-actions"><a id="resend-verify">Resend</a> · <a id="dismiss-verify">Dismiss</a></span>
+  </div>`;
+}
+
 // ---------- main shell ----------
 function render() {
   if (!state.token) return renderAuth('login');
@@ -280,12 +356,19 @@ function render() {
       <div><h2>${headTitle()}</h2><div class="fam">${esc(state.familyName || '')}</div></div>
       <div class="avatar" style="background:${esc(meColor)}">${esc(initials(state.me?.display_name))}</div>
     </div>
+    ${verifyBanner()}
     <div class="content" id="content"></div>
     <button class="fab" id="fab">+</button>
     <div class="tabbar">
       ${tab('home', '🏠', 'Home')}${tab('calendar', '📅', 'Calendar')}${tab('tasks', '✅', 'Tasks')}${tab('grocery', '🛒', 'Grocery')}${tab('altar', '🙏', 'Altar')}${tab('family', '👨‍👩‍👧', 'Family')}
     </div>`;
   $('#fab').onclick = onFab;
+  if ($('#resend-verify')) $('#resend-verify').onclick = async (e) => {
+    const a = e.currentTarget; a.textContent = 'Sending…';
+    try { await api('/auth/resend-verification', { method: 'POST' }); toast('Confirmation email sent 📧'); a.textContent = 'Sent ✓'; }
+    catch (err) { toast(err.message || 'Could not resend'); a.textContent = 'Resend'; }
+  };
+  if ($('#dismiss-verify')) $('#dismiss-verify').onclick = () => { state.verifyDismissed = true; $('#verify-bar')?.remove(); };
   document.querySelectorAll('.tabbar button').forEach((b) => b.onclick = () => { state.view = b.dataset.v; render(); });
   const c = $('#content');
   if (state.view === 'home') renderHome(c);
@@ -977,6 +1060,17 @@ function openMomentModal() {
 
 // ---------- boot ----------
 async function boot() {
+  // Handle links arriving from emails before anything else.
+  const params = new URLSearchParams(location.search);
+  if (params.has('reset')) {
+    const token = params.get('reset');
+    return renderReset(token);           // password-reset landing — no auth needed
+  }
+  if (params.has('verified')) {
+    const ok = params.get('verified') === '1';
+    history.replaceState(null, '', '/'); // clean the token/flag out of the URL
+    toast(ok ? 'Email confirmed ✅' : 'That confirmation link was invalid or expired.');
+  }
   if (!state.token) return renderAuth('login');
   try {
     const me = await api('/me'); state.user = me.user; state.families = me.families;

@@ -15,6 +15,10 @@ import {
   billingConfigured, webhookConfigured, FREE_MEMBER_LIMIT, isPremium, familyById, planSnapshot,
   createCheckout, createPortal, handleWebhook,
 } from './billing.js';
+import {
+  emailConfigured, createToken, consumeToken,
+  sendVerificationEmail, sendPasswordResetEmail,
+} from './email.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4000;
@@ -157,7 +161,13 @@ app.post('/api/register', authLimiter, wrap(async (req, res) => {
   const hash = await hashPassword(password);
   const info = db.prepare('INSERT INTO users (email, password_hash, name) VALUES (?,?,?)').run(email, hash, name);
   const user = { id: Number(info.lastInsertRowid), name };
-  res.json({ token: issueToken(user), user: { id: user.id, name, email } });
+  // Fire the welcome/confirmation email but never let its outcome block signup —
+  // the account is created and logged in either way; the link just confirms email.
+  try {
+    const token = createToken(user.id, 'verify');
+    sendVerificationEmail({ id: user.id, name, email }, token).catch(() => {});
+  } catch (e) { console.error('[register] verify email setup failed:', e.message); }
+  res.json({ token: issueToken(user), user: { id: user.id, name, email, email_verified: 0 } });
 }));
 
 app.post('/api/login', authLimiter, wrap(async (req, res) => {
@@ -170,11 +180,65 @@ app.post('/api/login', authLimiter, wrap(async (req, res) => {
   // Constant-ish response: always run a compare to blunt user-enumeration timing.
   const ok = user ? await verifyPassword(password, user.password_hash) : await verifyPassword(password, DUMMY_HASH);
   if (!user || !ok) return res.status(401).json({ error: 'Invalid email or password' });
-  res.json({ token: issueToken(user), user: { id: user.id, name: user.name, email: user.email } });
+  res.json({ token: issueToken(user), user: { id: user.id, name: user.name, email: user.email, email_verified: user.email_verified ? 1 : 0 } });
+}));
+
+// ---------- email verification + password reset ----------
+// Landing point for the link in the confirmation email. It's a GET (clicked from an
+// inbox), so on success/failure we redirect back into the app with a flag the SPA
+// reads to show a toast — never a raw JSON blob in the user's face.
+app.get('/api/verify-email', wrap(async (req, res) => {
+  const token = typeof req.query?.token === 'string' ? req.query.token : '';
+  const userId = consumeToken(token, 'verify');
+  if (!userId) return res.redirect('/?verified=0');
+  db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(userId);
+  res.redirect('/?verified=1');
+}));
+
+// Re-send the confirmation email to the logged-in user (if not already verified).
+app.post('/api/auth/resend-verification', authLimiter, requireAuth, wrap(async (req, res) => {
+  const user = db.prepare('SELECT id, name, email, email_verified FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user.email_verified) {
+    const token = createToken(user.id, 'verify');
+    await sendVerificationEmail(user, token);
+  }
+  res.json({ ok: true });
+}));
+
+// Start a password reset. ALWAYS returns the same generic 200 whether or not the
+// email exists — this is the endpoint that closes the account-enumeration gap the
+// audit flagged: an attacker can't probe which emails have Homillow accounts.
+app.post('/api/auth/forgot-password', authLimiter, wrap(async (req, res) => {
+  const email = str(req.body?.email, 254).toLowerCase();
+  if (EMAIL_RE.test(email)) {
+    const user = db.prepare('SELECT id, name, email FROM users WHERE email = ?').get(email);
+    if (user) {
+      try {
+        const token = createToken(user.id, 'reset');
+        await sendPasswordResetEmail(user, token);
+      } catch (e) { console.error('[forgot-password] send failed:', e.message); }
+    }
+  }
+  res.json({ ok: true, message: 'If that email has a Homillow account, a reset link is on its way.' });
+}));
+
+// Complete a password reset using the single-use token from the emailed link.
+app.post('/api/auth/reset-password', authLimiter, wrap(async (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token : '';
+  const np = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  if (np.length < 8) return res.status(400).json({ error: 'New password must be at least 8 characters' });
+  if (np.length > 200) return res.status(400).json({ error: 'New password too long (max 200 characters)' });
+  const userId = consumeToken(token, 'reset');
+  if (!userId) return res.status(400).json({ error: 'This reset link is invalid or has expired. Please request a new one.' });
+  const hash = await hashPassword(np);
+  // A successful reset also proves control of the inbox → mark the email verified.
+  db.prepare('UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?').run(hash, userId);
+  res.json({ ok: true });
 }));
 
 app.get('/api/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(req.userId);
+  const user = db.prepare('SELECT id, name, email, email_verified FROM users WHERE id = ?').get(req.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const families = db.prepare(`
     SELECT f.id, f.name, m.role, m.display_name, m.color, m.id AS membership_id
