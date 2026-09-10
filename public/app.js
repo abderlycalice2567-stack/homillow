@@ -553,7 +553,7 @@ function renderGrocery(c) {
     <div id="glist" style="margin-top:8px">${items.map((it) => `
       <div class="list-item">
         <div class="check ${it.checked ? 'on' : ''}" data-toggle="${it.id}">${it.checked ? '✓' : ''}</div>
-        <div class="li-main ${it.checked ? 'done' : ''}"><div class="t">${esc(it.name)}</div><div class="li-sub">${esc(it.category)}</div></div>
+        <div class="li-main ${it.checked ? 'done' : ''}" data-gedit="${it.id}" style="cursor:pointer"><div class="t">${esc(it.name)}</div><div class="li-sub">${esc(it.category)}</div></div>
         <button class="trash" data-del="${it.id}">🗑</button></div>`).join('')}</div></div>`;
   const input = $('#gadd');
   input.onkeydown = async (e) => { if (e.key === 'Enter' && input.value.trim()) {
@@ -564,9 +564,37 @@ function renderGrocery(c) {
     if (!it.checked) { celebrate(e.clientX, e.clientY); toast(pick(DONE_MSG)); }
     await api(`/families/${state.familyId}/grocery/${it.id}`, { method: 'PATCH', body: { checked: !it.checked } }); refresh();
   });
+  // Tap an item's name to rename it or change its aisle/category.
+  c.querySelectorAll('[data-gedit]').forEach((el) => el.onclick = () => {
+    const it = items.find((x) => x.id === Number(el.dataset.gedit));
+    if (it) openGroceryModal(it);
+  });
   c.querySelectorAll('[data-del]').forEach((el) => el.onclick = async () => {
     await api(`/families/${state.familyId}/grocery/${el.dataset.del}`, { method: 'DELETE' }); refresh();
   });
+}
+// Reopen a grocery item to rename it or move it to another category.
+function openGroceryModal(item) {
+  const cats = ['produce', 'meat', 'dairy', 'pantry', 'household', 'baby', 'cleaning', 'personal', 'other'];
+  const back = modal(`
+    <h3>Edit item</h3><div id="merr"></div>
+    <div class="field"><label>Item</label><input id="gi-name" value="${esc(item.name)}" maxlength="120" /></div>
+    <div class="field"><label>Category</label><select id="gi-cat">${cats.map((x) => `<option ${x === item.category ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+    <button class="btn" id="gi-save">Save changes</button>
+    <button class="btn ghost" id="gi-del" style="margin-top:10px">Delete item</button>`);
+  $('#gi-save', back).onclick = async () => {
+    const name = $('#gi-name', back).value.trim();
+    if (!name) { $('#merr', back).innerHTML = `<div class="err">Item name can't be empty.</div>`; return; }
+    try {
+      await api(`/families/${state.familyId}/grocery/${item.id}`, { method: 'PATCH', body: { name, category: $('#gi-cat', back).value } });
+      back.remove(); toast('Item updated ✓'); refresh();
+    } catch (e) { $('#merr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  $('#gi-del', back).onclick = async () => {
+    if (!confirm('Delete this item?')) return;
+    try { await api(`/families/${state.familyId}/grocery/${item.id}`, { method: 'DELETE' }); back.remove(); toast('Item deleted'); refresh(); }
+    catch (e) { $('#merr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
 }
 
 // ---------- FAMILY ALTAR ----------
@@ -816,7 +844,7 @@ function renderSettings(c) {
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v16</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v17</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
   if ($('#hist-row')) $('#hist-row').onclick = () => { state._prevView = 'home'; state.view = 'history'; render(); if (!state.history) loadHistory(); };
@@ -1003,7 +1031,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v16<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v17<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
@@ -1025,6 +1053,12 @@ function wirePicker(back) {
 function pickedIds(back) { return [...back.querySelectorAll('#mp .m.sel')].map((el) => Number(el.dataset.id)); }
 
 function localInputToISO(v) { return v ? new Date(v).toISOString() : null; }
+function isoToLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 function nowLocalInput(addH = 0) {
   const d = new Date(Date.now() + addH * 3600e3); d.setMinutes(0, 0, 0);
   const p = (n) => String(n).padStart(2, '0');
@@ -1061,16 +1095,51 @@ function openEventModal(preset) {
     } catch (e) { $('#merr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
 }
+// Tap an event to reopen it. Adults get a prefilled editor (edit any field or
+// delete); children see a read-only card (editing events is adult-only server-side).
 async function openEvent(id) {
   const e = state.data.events.find((x) => x.id === id); if (!e) return;
+  if (state.me?.role === 'child') {
+    modal(`
+      <h3>${esc(e.title)}</h3>
+      <p class="muted small">${esc(fmtDay(e.occ_start))} · ${e.all_day ? 'All day' : esc(fmtTime(e.occ_start)) + '–' + esc(fmtTime(e.occ_end))}</p>
+      ${e.location ? `<p class="small">📍 ${esc(e.location)}</p>` : ''}
+      ${e.participantIds.length ? whoChips(e.participantIds) : '<p class="muted small">No one assigned yet.</p>'}`);
+    return;
+  }
+  const cats = ['family', 'couple', 'work', 'school', 'sports', 'medical', 'church', 'personal', 'household', 'important'];
+  const recs = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
   const back = modal(`
-    <h3>${esc(e.title)}</h3>
-    <p class="muted small">${esc(fmtDay(e.occ_start))} · ${e.all_day ? 'All day' : esc(fmtTime(e.occ_start)) + '–' + esc(fmtTime(e.occ_end))}</p>
-    ${e.location ? `<p class="small">📍 ${esc(e.location)}</p>` : ''}
-    ${e.participantIds.length ? whoChips(e.participantIds) : '<p class="muted small">No one assigned yet.</p>'}
-    <div style="height:14px"></div>
-    <button class="btn ghost" id="del">Delete event</button>`);
-  $('#del', back).onclick = async () => { await api(`/families/${state.familyId}/events/${e.id}`, { method: 'DELETE' }); back.remove(); toast('Deleted'); refresh(); };
+    <h3>Edit event</h3><div id="merr"></div>
+    <div class="field"><label>Title</label><input id="e-title" value="${esc(e.title)}" /></div>
+    <div class="row2">
+      <div class="field"><label>Start</label><input id="e-start" type="datetime-local" value="${esc(isoToLocalInput(e.start_utc))}" /></div>
+      <div class="field"><label>End</label><input id="e-end" type="datetime-local" value="${esc(isoToLocalInput(e.end_utc))}" /></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Category</label><select id="e-cat">${cats.map((x) => `<option ${x === e.category ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      <div class="field"><label>Repeat</label><select id="e-rec">${recs.map((x) => `<option ${x === e.recurrence ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>Location</label><input id="e-loc" value="${esc(e.location || '')}" placeholder="Optional" /></div>
+    <div class="field"><label>Who's responsible?</label>${memberPicker(e.participantIds || [])}</div>
+    <button class="btn" id="e-save">Save changes</button>
+    <button class="btn ghost" id="e-del" style="margin-top:10px">Delete event</button>`);
+  wirePicker(back);
+  $('#e-save', back).onclick = async () => {
+    try {
+      await api(`/families/${state.familyId}/events/${e.id}`, { method: 'PATCH', body: {
+        title: $('#e-title', back).value, start_utc: localInputToISO($('#e-start', back).value),
+        end_utc: localInputToISO($('#e-end', back).value), category: $('#e-cat', back).value,
+        recurrence: $('#e-rec', back).value, location: $('#e-loc', back).value, participantIds: pickedIds(back),
+      }});
+      back.remove(); toast('Event updated ✓'); refresh();
+    } catch (err) { $('#merr', back).innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+  };
+  $('#e-del', back).onclick = async () => {
+    if (!confirm('Delete this event?')) return;
+    try { await api(`/families/${state.familyId}/events/${e.id}`, { method: 'DELETE' }); back.remove(); toast('Deleted'); refresh(); }
+    catch (err) { $('#merr', back).innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+  };
 }
 // Create a task, or — when passed an existing task — reopen it prefilled for editing.
 function openTaskModal(task = null) {

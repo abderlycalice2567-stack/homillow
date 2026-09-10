@@ -729,7 +729,9 @@ app.patch('/api/families/:familyId/grocery/:id', requireAuth, requireFamily, (re
   const it = db.prepare('SELECT * FROM grocery_items WHERE id = ? AND family_id = ?').get(id, req.familyId);
   if (!it) return res.status(404).json({ error: 'Item not found' });
   const checked = req.body?.checked !== undefined ? (req.body.checked ? 1 : 0) : it.checked;
-  db.prepare('UPDATE grocery_items SET checked=? WHERE id=?').run(checked, id);
+  const name = req.body?.name !== undefined ? (str(req.body.name, 120) || it.name) : it.name;
+  const category = GROCERY_CATS.includes(req.body?.category) ? req.body.category : it.category;
+  db.prepare('UPDATE grocery_items SET checked=?, name=?, category=? WHERE id=?').run(checked, name, category, id);
   broadcast(req.familyId, { type: 'grocery' });
   res.json({ item: db.prepare('SELECT * FROM grocery_items WHERE id = ?').get(id) });
 });
