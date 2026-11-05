@@ -19,6 +19,11 @@ import {
   emailConfigured, createToken, consumeToken,
   sendVerificationEmail, sendPasswordResetEmail,
 } from './email.js';
+import {
+  startEngine, setBroadcaster, scheduleSource, cancelSource, scheduleAnnualsFor,
+  getPrefs, setPrefs, savePushSub, removePushSub, vapidPublicKey, pushConfigured,
+  listNotifications, markRead, snooze,
+} from './notifications.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4000;
@@ -72,9 +77,17 @@ const RECUR = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
 
 const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const isISO = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
+// Optional per-item reminder override: an array of "minutes before" offsets. Returns a
+// JSON string to store, or null to fall back to the recipient's category defaults.
+function remindOffsets(v) {
+  if (!Array.isArray(v)) return null;
+  const clean = [...new Set(v.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 525600))].slice(0, 6);
+  return clean.length ? JSON.stringify(clean) : null;
+}
+const BILL_CATS = ['mortgage', 'rent', 'utilities', 'phone', 'internet', 'car', 'insurance', 'card', 'loan', 'subscription', 'tuition', 'tax', 'savings', 'other'];
 
 function membersOf(familyId) {
-  return db.prepare('SELECT id, display_name, color, role, user_id, birthdate FROM memberships WHERE family_id = ?').all(familyId);
+  return db.prepare('SELECT id, display_name, color, role, user_id, birthdate, anniversary FROM memberships WHERE family_id = ?').all(familyId);
 }
 // Validate that every id in list is a membership of this family. Returns clean int array.
 function sanitizeMemberIds(familyId, ids) {
@@ -89,7 +102,7 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 // Per-family row caps — bound storage growth AND the O(n)/O(n²) work that briefing
 // and conflict detection do over a family's rows. Table names come from this fixed
 // internal map (never user input), so interpolation here is safe.
-const ROW_CAPS = { events: 1000, tasks: 2000, grocery_items: 2000, goals: 500, moments: 3000, prayers: 2000 };
+const ROW_CAPS = { events: 1000, tasks: 2000, grocery_items: 2000, goals: 500, moments: 3000, prayers: 2000, bills: 500 };
 function atCap(table, familyId) {
   const max = ROW_CAPS[table];
   if (!max) return false;
@@ -429,9 +442,13 @@ app.patch('/api/families/:familyId/members/:mid', requireAuth, requireFamily, (r
   const color = /^#[0-9a-fA-F]{6}$/.test(b.color) ? b.color : target.color;
   let birthdate = target.birthdate;
   if (b.birthdate !== undefined) birthdate = isISO(b.birthdate) ? String(b.birthdate).slice(0, 10) : null;
-  db.prepare('UPDATE memberships SET display_name=?, color=?, birthdate=? WHERE id=?').run(display_name, color, birthdate, mid);
+  let anniversary = target.anniversary;
+  if (b.anniversary !== undefined) anniversary = isISO(b.anniversary) ? String(b.anniversary).slice(0, 10) : null;
+  db.prepare('UPDATE memberships SET display_name=?, color=?, birthdate=?, anniversary=? WHERE id=?').run(display_name, color, birthdate, anniversary, mid);
   audit(req.familyId, req.userId, 'member.update', String(mid));
   broadcast(req.familyId, { type: 'members' });
+  // New/changed birthday or anniversary → refresh the family's annual reminders now.
+  scheduleAnnualsFor(req.familyId);
   res.json({ ok: true });
 });
 
@@ -595,17 +612,19 @@ app.post('/api/families/:familyId/events', requireAuth, requireFamily, (req, res
   const recurrence = RECUR.includes(b.recurrence) ? b.recurrence : 'none';
   const partIds = sanitizeMemberIds(req.familyId, b.participantIds);
   const transportBy = sanitizeMemberIds(req.familyId, [b.transport_by])[0] ?? null;
+  const ro = remindOffsets(b.remind_offsets);
   const info = db.prepare(`INSERT INTO events
-    (family_id, title, description, location, category, start_utc, end_utc, all_day, recurrence, transport_by, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (family_id, title, description, location, category, start_utc, end_utc, all_day, recurrence, transport_by, created_by, remind_offsets)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     req.familyId, title, str(b.description, 1000), str(b.location, 200), category,
     new Date(b.start_utc).toISOString(), new Date(b.end_utc).toISOString(),
-    b.all_day ? 1 : 0, recurrence, transportBy, req.userId);
+    b.all_day ? 1 : 0, recurrence, transportBy, req.userId, ro);
   const insert = db.prepare('INSERT OR IGNORE INTO event_participants (event_id, membership_id) VALUES (?,?)');
   for (const id of partIds) insert.run(info.lastInsertRowid, id);
   audit(req.familyId, req.userId, 'event.create', title);
   const event = rowToEvent(db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid));
   broadcast(req.familyId, { type: 'events' });
+  scheduleSource('event', req.familyId, Number(info.lastInsertRowid));
   res.json({ event, conflicts: detectConflicts(req.familyId, event) });
 });
 
@@ -625,8 +644,9 @@ app.patch('/api/families/:familyId/events/:id', requireAuth, requireFamily, requ
     recurrence: RECUR.includes(b.recurrence) ? b.recurrence : ev.recurrence,
   };
   if (Date.parse(fields.end_utc) < Date.parse(fields.start_utc)) return res.status(400).json({ error: 'End must be after start' });
-  db.prepare(`UPDATE events SET title=?, description=?, location=?, category=?, start_utc=?, end_utc=?, all_day=?, recurrence=? WHERE id=?`)
-    .run(fields.title, fields.description, fields.location, fields.category, fields.start_utc, fields.end_utc, fields.all_day, fields.recurrence, id);
+  const ro = b.remind_offsets !== undefined ? remindOffsets(b.remind_offsets) : ev.remind_offsets;
+  db.prepare(`UPDATE events SET title=?, description=?, location=?, category=?, start_utc=?, end_utc=?, all_day=?, recurrence=?, remind_offsets=? WHERE id=?`)
+    .run(fields.title, fields.description, fields.location, fields.category, fields.start_utc, fields.end_utc, fields.all_day, fields.recurrence, ro, id);
   if (Array.isArray(b.participantIds)) {
     const partIds = sanitizeMemberIds(req.familyId, b.participantIds);
     db.prepare('DELETE FROM event_participants WHERE event_id = ?').run(id);
@@ -635,6 +655,8 @@ app.patch('/api/families/:familyId/events/:id', requireAuth, requireFamily, requ
   }
   audit(req.familyId, req.userId, 'event.update', String(id));
   broadcast(req.familyId, { type: 'events' });
+  // A changed date/time or participant set rebuilds this event's pending reminders.
+  scheduleSource('event', req.familyId, id);
   res.json({ event: rowToEvent(db.prepare('SELECT * FROM events WHERE id = ?').get(id)) });
 });
 
@@ -642,6 +664,7 @@ app.delete('/api/families/:familyId/events/:id', requireAuth, requireFamily, req
   const id = Number(req.params.id);
   const info = db.prepare('DELETE FROM events WHERE id = ? AND family_id = ?').run(id, req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Event not found' });
+  cancelSource('event', id);
   audit(req.familyId, req.userId, 'event.delete', String(id));
   broadcast(req.familyId, { type: 'events' });
   res.json({ ok: true });
@@ -682,9 +705,11 @@ app.post('/api/families/:familyId/tasks', requireAuth, requireFamily, (req, res)
   const assigned = sanitizeMemberIds(req.familyId, [req.body?.assigned_to])[0] ?? null;
   const due = isISO(req.body?.due_utc) ? new Date(req.body.due_utc).toISOString() : null;
   const points = Number.isInteger(req.body?.points) ? Math.max(0, Math.min(1000, req.body.points)) : 0;
-  const info = db.prepare('INSERT INTO tasks (family_id, title, assigned_to, due_utc, points, created_by) VALUES (?,?,?,?,?,?)')
-    .run(req.familyId, title, assigned, due, points, req.userId);
+  const ro = remindOffsets(req.body?.remind_offsets);
+  const info = db.prepare('INSERT INTO tasks (family_id, title, assigned_to, due_utc, points, created_by, remind_offsets) VALUES (?,?,?,?,?,?,?)')
+    .run(req.familyId, title, assigned, due, points, req.userId, ro);
   broadcast(req.familyId, { type: 'tasks' });
+  scheduleSource('task', req.familyId, Number(info.lastInsertRowid));
   res.json({ task: db.prepare('SELECT * FROM tasks WHERE id = ?').get(info.lastInsertRowid) });
 });
 app.patch('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, (req, res) => {
@@ -699,13 +724,18 @@ app.patch('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, (req,
   const assigned = (!isChild && req.body?.assigned_to !== undefined) ? (sanitizeMemberIds(req.familyId, [req.body.assigned_to])[0] ?? null) : t.assigned_to;
   const due = (!isChild && req.body?.due_utc !== undefined) ? (isISO(req.body.due_utc) ? req.body.due_utc : null) : t.due_utc;
   const points = (!isChild && req.body?.points !== undefined) ? Math.max(0, Math.min(100000, Math.trunc(Number(req.body.points)) || 0)) : t.points;
-  db.prepare('UPDATE tasks SET done=?, title=?, assigned_to=?, due_utc=?, points=? WHERE id=?').run(done, title, assigned, due, points, id);
+  const ro = (!isChild && req.body?.remind_offsets !== undefined) ? remindOffsets(req.body.remind_offsets) : t.remind_offsets;
+  db.prepare('UPDATE tasks SET done=?, title=?, assigned_to=?, due_utc=?, points=?, remind_offsets=? WHERE id=?').run(done, title, assigned, due, points, ro, id);
   broadcast(req.familyId, { type: 'tasks' });
+  // Reschedule from the new state: completion cancels pending reminders; a changed due
+  // date / assignee / offsets rebuilds them. Idempotent.
+  scheduleSource('task', req.familyId, id);
   res.json({ task: db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) });
 });
 app.delete('/api/families/:familyId/tasks/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
   const info = db.prepare('DELETE FROM tasks WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
   if (!info.changes) return res.status(404).json({ error: 'Task not found' });
+  cancelSource('task', Number(req.params.id));
   broadcast(req.familyId, { type: 'tasks' });
   res.json({ ok: true });
 });
@@ -783,6 +813,143 @@ app.get('/api/families/:familyId/briefing', requireAuth, requireFamily, (req, re
   res.json({ date: dayStart.toISOString(), timeline: occ, byMember: Object.values(byMember), unassigned, conflicts, tasksDue, groceryOpen, prayersOpen, devotional: todaysDevotional(dayStart) });
 });
 
+// ---------- bills (household financial obligations) ----------
+function rowToBill(b) { return { ...b, autopay: !!b.autopay, paid: !!b.paid, amount: b.amount_cents / 100 }; }
+
+app.get('/api/families/:familyId/bills', requireAuth, requireFamily, (req, res) => {
+  const rows = db.prepare('SELECT * FROM bills WHERE family_id = ? ORDER BY paid, due_date').all(req.familyId);
+  res.json({ bills: rows.map(rowToBill) });
+});
+app.post('/api/families/:familyId/bills', requireAuth, requireFamily, requireAdult, (req, res) => {
+  if (atCap('bills', req.familyId)) return res.status(400).json({ error: CAP_MSG });
+  const b = req.body || {};
+  const name = str(b.name, 120);
+  if (!name) return res.status(400).json({ error: 'Bill name required' });
+  if (!isISO(b.due_date)) return res.status(400).json({ error: 'Valid due date required' });
+  const dueDate = String(b.due_date).slice(0, 10);
+  const amount_cents = Number.isFinite(+b.amount) ? Math.max(0, Math.min(99999999, Math.round(+b.amount * 100))) : 0;
+  const category = BILL_CATS.includes(b.category) ? b.category : 'other';
+  const recurrence = RECUR.includes(b.recurrence) ? b.recurrence : 'monthly';
+  const autopay = b.autopay ? 1 : 0;
+  const assigned = sanitizeMemberIds(req.familyId, [b.assigned_to])[0] ?? null;
+  const info = db.prepare(`INSERT INTO bills (family_id, name, amount_cents, category, due_date, recurrence, autopay, assigned_to, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(req.familyId, name, amount_cents, category, dueDate, recurrence, autopay, assigned, req.userId);
+  audit(req.familyId, req.userId, 'bill.create', name);
+  broadcast(req.familyId, { type: 'bills' });
+  scheduleSource('bill', req.familyId, Number(info.lastInsertRowid));
+  res.json({ bill: rowToBill(db.prepare('SELECT * FROM bills WHERE id = ?').get(info.lastInsertRowid)) });
+});
+app.patch('/api/families/:familyId/bills/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
+  const id = Number(req.params.id);
+  const bill = db.prepare('SELECT * FROM bills WHERE id = ? AND family_id = ?').get(id, req.familyId);
+  if (!bill) return res.status(404).json({ error: 'Bill not found' });
+  const b = req.body || {};
+  const name = b.name !== undefined ? (str(b.name, 120) || bill.name) : bill.name;
+  const amount_cents = b.amount !== undefined && Number.isFinite(+b.amount) ? Math.max(0, Math.min(99999999, Math.round(+b.amount * 100))) : bill.amount_cents;
+  const category = BILL_CATS.includes(b.category) ? b.category : bill.category;
+  const due_date = isISO(b.due_date) ? String(b.due_date).slice(0, 10) : bill.due_date;
+  const recurrence = RECUR.includes(b.recurrence) ? b.recurrence : bill.recurrence;
+  const autopay = b.autopay !== undefined ? (b.autopay ? 1 : 0) : bill.autopay;
+  const assigned = b.assigned_to !== undefined ? (sanitizeMemberIds(req.familyId, [b.assigned_to])[0] ?? null) : bill.assigned_to;
+  // Marking paid is an explicit, authorized action — we never infer payment. When a
+  // recurring bill is paid, roll its due date to the next cycle and reopen it.
+  let paid = bill.paid, paid_at = bill.paid_at, nextDue = due_date;
+  if (b.paid !== undefined) {
+    if (b.paid && !bill.paid) {
+      if (recurrence !== 'none') { nextDue = rollDate(due_date, recurrence); paid = 0; paid_at = null; }
+      else { paid = 1; paid_at = new Date().toISOString(); }
+      audit(req.familyId, req.userId, 'bill.paid', name);
+    } else if (!b.paid) { paid = 0; paid_at = null; }
+  }
+  db.prepare('UPDATE bills SET name=?, amount_cents=?, category=?, due_date=?, recurrence=?, autopay=?, assigned_to=?, paid=?, paid_at=? WHERE id=?')
+    .run(name, amount_cents, category, nextDue, recurrence, autopay, assigned, paid, paid_at, id);
+  broadcast(req.familyId, { type: 'bills' });
+  // Paid (or edited) → cancel stale reminders and rebuild for the current state.
+  cancelSource('bill', id);
+  scheduleSource('bill', req.familyId, id);
+  res.json({ bill: rowToBill(db.prepare('SELECT * FROM bills WHERE id = ?').get(id)) });
+});
+app.delete('/api/families/:familyId/bills/:id', requireAuth, requireFamily, requireAdult, (req, res) => {
+  const info = db.prepare('DELETE FROM bills WHERE id = ? AND family_id = ?').run(Number(req.params.id), req.familyId);
+  if (!info.changes) return res.status(404).json({ error: 'Bill not found' });
+  cancelSource('bill', Number(req.params.id));
+  broadcast(req.familyId, { type: 'bills' });
+  res.json({ ok: true });
+});
+
+// Roll a YYYY-MM-DD forward by one recurrence step (used when a recurring bill is paid).
+function rollDate(dateStr, rec) {
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (rec === 'weekly') dt.setUTCDate(dt.getUTCDate() + 7);
+  else if (rec === 'monthly') dt.setUTCMonth(dt.getUTCMonth() + 1);
+  else if (rec === 'yearly') dt.setUTCFullYear(dt.getUTCFullYear() + 1);
+  else if (rec === 'daily') dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0, 10);
+}
+
+// ---------- notification engine: preferences, center, push, actions ----------
+app.get('/api/notifications/prefs', requireAuth, (req, res) => res.json({ prefs: getPrefs(req.userId), pushConfigured: pushConfigured() }));
+app.patch('/api/notifications/prefs', requireAuth, (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  res.json({ prefs: setPrefs(req.userId, body) });
+});
+
+app.get('/api/notifications', requireAuth, (req, res) => res.json(listNotifications(req.userId)));
+app.post('/api/notifications/read', requireAuth, (req, res) => {
+  markRead(req.userId, req.body?.id === 'all' ? 'all' : Number(req.body?.id));
+  res.json({ ok: true });
+});
+
+app.get('/api/push/vapid-key', requireAuth, (req, res) => res.json({ key: vapidPublicKey(), configured: pushConfigured() }));
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const ok = savePushSub(req.userId, req.body?.subscription, req.headers['user-agent'] || '');
+  if (!ok) return res.status(400).json({ error: 'Invalid subscription' });
+  res.json({ ok: true });
+});
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  removePushSub(req.userId, str(req.body?.endpoint, 500));
+  res.json({ ok: true });
+});
+
+// Actionable notifications (Done / Mark paid / Snooze) — each change re-checks the
+// caller's authorization against the family that owns the item before mutating.
+app.post('/api/notifications/action', requireAuth, wrap(async (req, res) => {
+  const action = str(req.body?.action, 20);
+  const type = str(req.body?.type, 20);
+  const sid = Number(req.body?.sourceId);
+  const familyId = Number(req.body?.familyId);
+  if (!Number.isInteger(sid) || !Number.isInteger(familyId)) return res.status(400).json({ error: 'Bad request' });
+  const membership = db.prepare('SELECT role FROM memberships WHERE family_id = ? AND user_id = ?').get(familyId, req.userId);
+  if (!membership) return res.status(403).json({ error: 'Not a member of this family' });
+
+  if (action === 'snooze') {
+    snooze(req.userId, type, sid, Number(req.body?.minutes) || 60);
+    return res.json({ ok: true });
+  }
+  if (action === 'complete' && type === 'task') {
+    const t = db.prepare('SELECT * FROM tasks WHERE id = ? AND family_id = ?').get(sid, familyId);
+    if (!t) return res.status(404).json({ error: 'Task not found' });
+    db.prepare('UPDATE tasks SET done = 1 WHERE id = ?').run(sid);
+    cancelSource('task', sid);
+    broadcast(familyId, { type: 'tasks' });
+    return res.json({ ok: true });
+  }
+  if (action === 'paid' && type === 'bill') {
+    // Marking paid mutates family finances → adults/admins only.
+    if (membership.role === 'child') return res.status(403).json({ error: 'Not allowed' });
+    const bill = db.prepare('SELECT * FROM bills WHERE id = ? AND family_id = ?').get(sid, familyId);
+    if (!bill) return res.status(404).json({ error: 'Bill not found' });
+    if (bill.recurrence !== 'none') db.prepare('UPDATE bills SET due_date = ?, paid = 0, paid_at = NULL WHERE id = ?').run(rollDate(bill.due_date, bill.recurrence), sid);
+    else db.prepare("UPDATE bills SET paid = 1, paid_at = datetime('now') WHERE id = ?").run(sid);
+    cancelSource('bill', sid);
+    scheduleSource('bill', familyId, sid);
+    broadcast(familyId, { type: 'bills' });
+    return res.json({ ok: true });
+  }
+  res.json({ ok: true }); // 'view' and unknowns are no-ops server-side
+}));
+
 // ---------- static PWA ----------
 app.use(express.static(join(__dirname, '..', 'public')));
 
@@ -839,6 +1006,11 @@ server.listen(PORT, () => {
   } else {
     console.log('[homillow] Billing fully configured (secret key + webhook).');
   }
+  // Centralized reminder engine: in-app bell + Web Push + email across calendar,
+  // tasks, bills, birthdays, anniversaries. Safe to start even if push/email are
+  // unconfigured — it degrades to whatever channels are available.
+  setBroadcaster(broadcast);
+  startEngine().catch((e) => console.error('[homillow] notification engine failed to start:', e.message));
 });
 
 export { app, server };

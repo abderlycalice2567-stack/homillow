@@ -354,3 +354,22 @@ html[data-theme="dark"] .toggle { background: #3a4650; }
 .verify-bar .verify-actions { white-space: nowrap; color: var(--muted); }
 .verify-bar .verify-actions a { color: var(--brand); cursor: pointer; font-weight: 700; }
 html[data-theme="dark"] .verify-bar { background: #33261c; color: #f0d3c2; border-color: #5a4030; }
+
+/* ---------- Notifications, bell & bills (v18) ---------- */
+.notif-badge { position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: #e23b3b; color: #fff; font-size: 10px; font-weight: 800; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--brand, #c2582f); }
+.notif-item.unread { background: color-mix(in srgb, var(--brand, #c2582f) 8%, transparent); border-radius: 10px; }
+.notif-item .li-sub { white-space: normal; }
+.notif-acts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.btn.tiny { width: auto; display: inline-flex; align-items: center; padding: 6px 12px; font-size: 12px; font-weight: 700; border-radius: 9px; }
+.btn.tiny.ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+
+.bills-summary { display: flex; align-items: center; justify-content: space-between; }
+.bills-total { font-size: 24px; font-weight: 800; color: var(--accent); }
+.bill-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bill-amt { color: var(--accent); font-weight: 700; margin-left: 4px; }
+.bill-btns { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.due-over { color: #e23b3b; font-weight: 700; }
+.due-soon { color: #d98324; font-weight: 700; }
+.icon-btn { background: transparent; border: none; font-size: 15px; cursor: pointer; padding: 4px; line-height: 1; }
+.check-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; cursor: pointer; }
+.check-row input { width: auto; }

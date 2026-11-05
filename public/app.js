@@ -15,9 +15,12 @@ const state = {
   view: 'home',
   ws: null,
   weather: null,
-  data: { briefing: null, events: [], tasks: [], grocery: [], goals: [], moments: [], prayers: [] },
+  data: { briefing: null, events: [], tasks: [], grocery: [], goals: [], moments: [], prayers: [], bills: [] },
   history: null,          // past events fetched on demand (wider window than the calendar)
   historyFilter: 'all',
+  notifs: [],             // in-app notification center (the bell)
+  notifUnread: 0,
+  notifPrefs: null,
 };
 
 // ---------- utils ----------
@@ -280,7 +283,14 @@ function connectWS() {
   const ws = new WebSocket(`${proto}://${location.host}/?familyId=${state.familyId}`, [state.token]);
   ws.onmessage = (ev) => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
-    if (['events', 'tasks', 'grocery', 'members', 'goals', 'moments', 'prayers'].includes(m.type)) refresh(true);
+    if (['events', 'tasks', 'grocery', 'members', 'goals', 'moments', 'prayers', 'bills'].includes(m.type)) refresh(true);
+    else if (m.type === 'notification' && m.notification && m.userId === state.user?.id) {
+      // A reminder just fired for me — surface it live and bump the bell.
+      state.notifs.unshift(m.notification);
+      state.notifUnread += 1;
+      toast(`🔔 ${m.notification.title}`);
+      if (state.view === 'notifs') renderNotifs($('#content')); else render();
+    }
   };
   ws.onclose = () => { setTimeout(() => { if (state.token && state.familyId) connectWS(); }, 3000); };
   state.ws = ws;
@@ -295,14 +305,17 @@ async function refresh(quiet) {
   const ds = new Date(); ds.setHours(0, 0, 0, 0);
   const de = new Date(); de.setHours(23, 59, 59, 999);
   const bq = `?from=${encodeURIComponent(ds.toISOString())}&to=${encodeURIComponent(de.toISOString())}`;
-  const [fam, brief, ev, tk, gr, gl, mo, pr] = await Promise.all([
+  const [fam, brief, ev, tk, gr, gl, mo, pr, bl, nt] = await Promise.all([
     api(`/families/${f}`), api(`/families/${f}/briefing${bq}`),
     api(`/families/${f}/events`), api(`/families/${f}/tasks`), api(`/families/${f}/grocery`),
     api(`/families/${f}/goals`), api(`/families/${f}/moments`), api(`/families/${f}/prayers`),
+    api(`/families/${f}/bills`).catch(() => ({ bills: [] })),
+    api('/notifications').catch(() => ({ notifications: [], unread: 0 })),
   ]);
   state.members = fam.members; state.me = fam.me; state.familyName = fam.family.name;
   state.billing = fam.billing || { plan: 'free', premium: false, billing_enabled: false, free_member_limit: 4 };
-  state.data = { briefing: brief, events: ev.events, tasks: tk.tasks, grocery: gr.items, goals: gl.goals, moments: mo.moments, prayers: pr.prayers };
+  state.data = { briefing: brief, events: ev.events, tasks: tk.tasks, grocery: gr.items, goals: gl.goals, moments: mo.moments, prayers: pr.prayers, bills: bl.bills || [] };
+  state.notifs = nt.notifications || []; state.notifUnread = nt.unread || 0;
   if (!quiet) {} render();
 }
 
@@ -357,18 +370,20 @@ function render() {
     <div class="app-head">
       <div><h2>${headTitle()}</h2><div class="fam">${esc(state.familyName || '')}</div></div>
       <div class="head-actions">
+        <button class="hdr-icon ${state.view === 'notifs' ? 'on' : ''}" id="bell-btn" title="Notifications" aria-label="Notifications" style="position:relative">🔔${state.notifUnread > 0 ? `<span class="notif-badge">${state.notifUnread > 9 ? '9+' : state.notifUnread}</span>` : ''}</button>
         <button class="hdr-icon ${state.view === 'history' ? 'on' : ''}" id="hist-btn" title="History" aria-label="History">🕘</button>
         <div class="avatar" id="me-avatar" title="Settings" style="background:${esc(meColor)};cursor:pointer">${esc(initials(state.me?.display_name))}</div>
       </div>
     </div>
     ${verifyBanner()}
     <div class="content" id="content"></div>
-    ${state.view === 'settings' || state.view === 'history' ? '' : '<button class="fab" id="fab">+</button>'}
+    ${['settings', 'history', 'notifs'].includes(state.view) ? '' : '<button class="fab" id="fab">+</button>'}
     <div class="tabbar">
       ${tab('home', '🏠', 'Home')}${tab('calendar', '📅', 'Calendar')}${tab('tasks', '✅', 'Tasks')}${tab('grocery', '🛒', 'Grocery')}${tab('altar', '🙏', 'Altar')}${tab('family', '👨‍👩‍👧', 'Family')}
     </div>`;
   if ($('#fab')) $('#fab').onclick = onFab;
   if ($('#me-avatar')) $('#me-avatar').onclick = () => { if (state.view !== 'settings') state._prevView = state.view; state.view = 'settings'; render(); };
+  if ($('#bell-btn')) $('#bell-btn').onclick = () => { if (state.view !== 'notifs') state._prevView = state.view; state.view = 'notifs'; render(); loadNotifs(); };
   if ($('#hist-btn')) $('#hist-btn').onclick = () => { if (state.view !== 'history') state._prevView = state.view; state.view = 'history'; render(); if (!state.history) loadHistory(); };
   if ($('#resend-verify')) $('#resend-verify').onclick = async (e) => {
     const a = e.currentTarget; a.textContent = 'Sending…';
@@ -385,6 +400,8 @@ function render() {
   else if (state.view === 'altar') renderAltar(c);
   else if (state.view === 'family') renderFamily(c);
   else if (state.view === 'history') renderHistory(c);
+  else if (state.view === 'bills') renderBills(c);
+  else if (state.view === 'notifs') renderNotifs(c);
   else if (state.view === 'settings') renderSettings(c);
 }
 function tab(v, ic, label) { return `<button data-v="${v}" class="${state.view === v ? 'active' : ''}"><span class="ic">${ic}</span>${label}</button>`; }
@@ -396,7 +413,7 @@ function headTitle() {
     const nm = (state.me?.display_name || '').split(' ')[0];
     return `${g}${nm ? ', ' + esc(nm) : ''} ${emo}`;
   }
-  return { calendar: 'Calendar', tasks: 'Tasks & Chores', grocery: 'Grocery', altar: 'Family Altar', family: 'Family', history: 'History', settings: 'Settings' }[state.view] || 'Homillow';
+  return { calendar: 'Calendar', tasks: 'Tasks & Chores', grocery: 'Grocery', altar: 'Family Altar', family: 'Family', history: 'History', bills: 'Bills', notifs: 'Notifications', settings: 'Settings' }[state.view] || 'Homillow';
 }
 
 const CAT_ICON = { work: '💼', school: '🎒', sports: '⚽', medical: '🩺', church: '⛪', family: '🏡', couple: '❤️', personal: '⭐', household: '🧹', important: '❗' };
@@ -839,14 +856,18 @@ function renderSettings(c) {
     <div class="card"><div class="card-head"><h3>⚙️ Settings</h3></div>
       <div class="setting-row" id="acct-row" style="cursor:pointer"><div class="li-main"><div class="t">Account</div><div class="li-sub">${esc(state.user?.email || 'Name, email & password')}</div></div><span class="chev">›</span></div>
       <div class="setting-row" id="subs-row" style="cursor:pointer"><div class="li-main"><div class="t">Subscription</div><div class="li-sub">${isPremiumNow() ? 'Homillow Premium 💎' : 'Free plan'}</div></div><span class="chev">›</span></div>
+      <div class="setting-row" id="notif-row" style="cursor:pointer"><div class="li-main"><div class="t">Notifications &amp; reminders</div><div class="li-sub">Push, email, quiet hours &amp; what to be reminded of</div></div><span class="chev">›</span></div>
+      <div class="setting-row" id="bills-row" style="cursor:pointer"><div class="li-main"><div class="t">Bills &amp; due dates</div><div class="li-sub">Track payments &amp; get reminded before they're due</div></div><span class="chev">›</span></div>
       <div class="setting-row" id="hist-row" style="cursor:pointer"><div class="li-main"><div class="t">History</div><div class="li-sub">Past events, tasks &amp; milestones</div></div><span class="chev">›</span></div>
       <div class="setting-row"><div class="li-main"><div class="t">Dark mode</div><div class="li-sub">Easy on the eyes at night</div></div>
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v17</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v18</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
+  if ($('#notif-row')) $('#notif-row').onclick = openNotifModal;
+  if ($('#bills-row')) $('#bills-row').onclick = () => { state._prevView = 'home'; state.view = 'bills'; render(); };
   if ($('#hist-row')) $('#hist-row').onclick = () => { state._prevView = 'home'; state.view = 'history'; render(); if (!state.history) loadHistory(); };
   if ($('#help-row')) $('#help-row').onclick = openHelpModal;
   if ($('#themetoggle')) $('#themetoggle').onclick = () => { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); render(); };
@@ -926,6 +947,7 @@ function renderHistory(c) {
 // ---------- add / edit ----------
 function onFab() {
   if (state.view === 'tasks') return openTaskModal();
+  if (state.view === 'bills') return openBillModal();
   if (state.view === 'grocery') { $('#gadd')?.focus(); return; }
   if (state.view === 'altar') { $('#padd')?.focus(); return; }
   openEventModal();
@@ -1256,5 +1278,249 @@ async function boot() {
     console.error(e); toast(e.message);
   }
 }
+// ======================================================================
+// Notifications & reminders — the bell, Bills, settings, and Web Push.
+// ======================================================================
+const NOTIF_ICON = { task: '✅', event: '📅', bill: '💵', birthday: '🎂', anniversary: '💍' };
+function timeAgo(iso) {
+  const s = Math.max(0, (Date.now() - Date.parse(iso + (iso.includes('Z') ? '' : 'Z'))) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+async function loadNotifs() {
+  try {
+    const out = await api('/notifications');
+    state.notifs = out.notifications || []; state.notifUnread = out.unread || 0;
+    if (state.view === 'notifs') renderNotifs($('#content'));
+    // Opening the bell marks everything read.
+    if (state.notifUnread > 0) { await api('/notifications/read', { method: 'POST', body: { id: 'all' } }); state.notifUnread = 0; if ($('#bell-btn')) render(); }
+  } catch {}
+}
+
+function renderNotifs(c) {
+  const list = state.notifs || [];
+  const items = list.map((n) => {
+    const d = n.data || {};
+    const type = d.taskId ? 'task' : d.billId ? 'bill' : d.eventId ? 'event' : (d.memberId ? n.category : '');
+    const sid = d.taskId || d.billId || d.eventId || d.memberId;
+    const acts = (d.actions || []).filter((a) => a !== 'view').map((a) => {
+      const label = { complete: '✓ Done', paid: '✓ Mark paid', snooze: '😴 Snooze 1h' }[a] || a;
+      return `<button class="btn tiny ghost" data-na="${a}" data-nt="${type}" data-ns="${sid}">${label}</button>`;
+    }).join('');
+    return `<div class="list-item notif-item ${n.read ? '' : 'unread'}">
+      <div class="li-main"><div class="t">${NOTIF_ICON[n.category] || '🔔'} ${esc(n.title)}</div>
+        <div class="li-sub">${esc(n.body)}</div>
+        <div class="muted small">${timeAgo(n.created_at)}</div>
+        ${acts ? `<div class="notif-acts">${acts}</div>` : ''}</div></div>`;
+  }).join('');
+  c.innerHTML = `
+    <div class="card"><div class="card-head"><h3>🔔 Notifications</h3>
+      <button class="btn tiny ghost" id="notif-settings">Settings</button></div>
+      ${list.length ? items : `<div class="empty-warm big"><div class="ee">🔔</div><div class="et">You're all caught up.</div><div class="es">Reminders for tasks, events, bills and birthdays will show up here.</div></div>`}
+    </div>`;
+  if ($('#notif-settings')) $('#notif-settings').onclick = openNotifModal;
+  c.querySelectorAll('[data-na]').forEach((b) => b.onclick = () => performNotifAction(b.dataset.na, b.dataset.nt, Number(b.dataset.ns), state.familyId));
+}
+
+async function performNotifAction(action, type, sourceId, familyId) {
+  if (!type || !sourceId) return;
+  try {
+    await api('/notifications/action', { method: 'POST', body: { action, type, sourceId, familyId: familyId || state.familyId, minutes: 60 } });
+    toast(action === 'snooze' ? 'Snoozed 1 hour 😴' : action === 'complete' ? 'Marked done ✓' : action === 'paid' ? 'Marked paid ✓' : 'Done');
+    refresh(true);
+  } catch (e) { toast(e.message || 'Could not do that'); }
+}
+
+// ---------- BILLS ----------
+const BILL_ICON = { mortgage: '🏠', rent: '🏠', utilities: '💡', phone: '📱', internet: '🌐', car: '🚗', insurance: '🛡️', card: '💳', loan: '🏦', subscription: '🔁', tuition: '🎓', tax: '🧾', savings: '🐖', other: '💵' };
+const BILL_CATS_UI = ['mortgage', 'rent', 'utilities', 'phone', 'internet', 'car', 'insurance', 'card', 'loan', 'subscription', 'tuition', 'tax', 'savings', 'other'];
+function fmtMoney(n) { return '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function dueLabel(dateStr) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr + 'T00:00:00');
+  const days = Math.round((d - today) / 864e5);
+  if (days < 0) return `<span class="due-over">Overdue ${-days}d</span>`;
+  if (days === 0) return `<span class="due-soon">Due today</span>`;
+  if (days === 1) return `<span class="due-soon">Due tomorrow</span>`;
+  if (days <= 7) return `<span class="due-soon">Due in ${days}d</span>`;
+  return `Due ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+}
+function renderBills(c) {
+  const bills = (state.data.bills || []);
+  const open = bills.filter((b) => !b.paid).sort((a, b) => a.due_date.localeCompare(b.due_date));
+  const paid = bills.filter((b) => b.paid);
+  const monthlyTotal = open.reduce((s, b) => s + (b.amount || 0), 0);
+  const canEdit = state.me?.role !== 'child';
+  const billRow = (b) => {
+    const m = b.assigned_to ? memberById(b.assigned_to) : null;
+    return `<div class="list-item bill-item">
+      <div class="li-main"><div class="t">${BILL_ICON[b.category] || '💵'} ${esc(b.name)} ${b.amount ? `<span class="bill-amt">${fmtMoney(b.amount)}</span>` : ''}</div>
+        <div class="li-sub">${dueLabel(b.due_date)}${b.recurrence !== 'none' ? ' · 🔁 ' + b.recurrence : ''}${b.autopay ? ' · auto-pay' : ''}${m ? ' · ' + esc(m.display_name) : ''}</div></div>
+      ${canEdit ? `<div class="bill-btns">
+        ${!b.paid ? `<button class="btn tiny" data-paid="${b.id}">Mark paid</button>` : ''}
+        <button class="icon-btn" data-edit="${b.id}" aria-label="Edit">✏️</button>
+        <button class="icon-btn" data-del="${b.id}" aria-label="Delete">🗑️</button>
+      </div>` : ''}</div>`;
+  };
+  c.innerHTML = `
+    <div class="card">
+      <div class="bills-summary"><div><div class="muted small">Upcoming</div><div class="bills-total">${fmtMoney(monthlyTotal)}</div></div>
+        <div class="muted small">${open.length} unpaid · ${paid.length} paid</div></div>
+    </div>
+    ${open.length ? `<div class="section-title">Upcoming</div><div class="card">${open.map(billRow).join('')}</div>` : `<div class="empty-warm big"><div class="ee">💵</div><div class="et">No bills yet.</div><div class="es">Add your mortgage, utilities, car payment, cards — Homillow reminds you before each one's due.</div></div>`}
+    ${paid.length ? `<div class="section-title">Recently paid</div><div class="card">${paid.slice(0, 20).map(billRow).join('')}</div>` : ''}
+    ${canEdit ? `<button class="btn" id="add-bill" style="margin-top:14px">+ Add a bill</button>` : ''}`;
+  if ($('#add-bill')) $('#add-bill').onclick = () => openBillModal();
+  c.querySelectorAll('[data-paid]').forEach((b) => b.onclick = () => markBillPaid(Number(b.dataset.paid)));
+  c.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => openBillModal((state.data.bills || []).find((x) => x.id === Number(b.dataset.edit))));
+  c.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => deleteBill(Number(b.dataset.del)));
+}
+async function markBillPaid(id) {
+  try { await api(`/families/${state.familyId}/bills/${id}`, { method: 'PATCH', body: { paid: true } }); celebrate(); toast('Marked paid ✓'); refresh(true); }
+  catch (e) { toast(e.message || 'Could not update'); }
+}
+async function deleteBill(id) {
+  if (!confirm('Delete this bill? Its reminders will be cancelled.')) return;
+  try { await api(`/families/${state.familyId}/bills/${id}`, { method: 'DELETE' }); toast('Bill deleted'); refresh(true); }
+  catch (e) { toast(e.message || 'Could not delete'); }
+}
+function openBillModal(bill = null) {
+  const edit = !!bill;
+  const back = modal(`
+    <h3>${edit ? 'Edit bill' : 'New bill'}</h3><div id="berr"></div>
+    <div class="field"><label>Name</label><input id="b-name" value="${esc(bill?.name || '')}" placeholder="Electric bill" maxlength="120" /></div>
+    <div class="row2">
+      <div class="field"><label>Amount</label><input id="b-amt" type="number" min="0" step="0.01" value="${bill?.amount ?? ''}" placeholder="0.00" /></div>
+      <div class="field"><label>Due date</label><input id="b-due" type="date" value="${bill?.due_date || new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10)}" /></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Category</label><select id="b-cat">${BILL_CATS_UI.map((x) => `<option ${x === (bill?.category || 'other') ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      <div class="field"><label>Repeat</label><select id="b-rec">${['none', 'weekly', 'monthly', 'yearly'].map((x) => `<option ${x === (bill?.recurrence || 'monthly') ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>Who's responsible? <span class="muted small">(optional)</span></label>${memberPicker(bill?.assigned_to ? [bill.assigned_to] : [])}</div>
+    <label class="check-row"><input type="checkbox" id="b-auto" ${bill?.autopay ? 'checked' : ''}/> On auto-pay</label>
+    <button class="btn" id="b-save">${edit ? 'Save bill' : 'Add bill'}</button>
+    ${edit ? `<button class="btn ghost" id="b-del" style="color:#c0392b;margin-top:8px">Delete bill</button>` : ''}`);
+  wirePicker(back);
+  $('#b-save', back).onclick = async () => {
+    const body = {
+      name: $('#b-name', back).value.trim(),
+      amount: parseFloat($('#b-amt', back).value) || 0,
+      due_date: $('#b-due', back).value,
+      category: $('#b-cat', back).value,
+      recurrence: $('#b-rec', back).value,
+      autopay: $('#b-auto', back).checked,
+      assigned_to: pickedIds(back)[0] ?? null,
+    };
+    if (!body.name) { $('#berr', back).innerHTML = `<div class="err">Give the bill a name.</div>`; return; }
+    if (!body.due_date) { $('#berr', back).innerHTML = `<div class="err">Pick a due date.</div>`; return; }
+    try {
+      if (edit) await api(`/families/${state.familyId}/bills/${bill.id}`, { method: 'PATCH', body });
+      else await api(`/families/${state.familyId}/bills`, { method: 'POST', body });
+      back.remove(); toast(edit ? 'Bill saved' : 'Bill added 💵'); refresh(true);
+    } catch (e) { $('#berr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  if ($('#b-del', back)) $('#b-del', back).onclick = async () => { back.remove(); deleteBill(bill.id); };
+}
+
+// ---------- notification settings ----------
+async function loadNotifPrefs() {
+  try { const out = await api('/notifications/prefs'); state.notifPrefs = out.prefs; state.pushConfigured = out.pushConfigured; }
+  catch { state.notifPrefs = state.notifPrefs || null; }
+}
+async function openNotifModal() {
+  if (!state.notifPrefs) await loadNotifPrefs();
+  const p = state.notifPrefs || {};
+  const ch = p.channels || {}; const cat = p.categories || {}; const q = p.quietHours || {};
+  const pushOn = typeof Notification !== 'undefined' && Notification.permission === 'granted';
+  const toggle = (id, on) => `<button class="toggle ${on ? 'on' : ''}" id="${id}"><span class="knob"></span></button>`;
+  const catRow = (k, label, icon) => `<div class="setting-row"><div class="li-main"><div class="t">${icon} ${label}</div></div>${toggle('cat-' + k, cat[k] !== false)}</div>`;
+  const back = modal(`
+    <h3>🔔 Notifications &amp; reminders</h3>
+    <div class="muted small" style="margin-bottom:8px">Choose how and what Homillow reminds you about. These settings are yours alone.</div>
+    <div class="section-title">How you're reminded</div>
+    <div class="setting-row"><div class="li-main"><div class="t">📲 Push notifications</div><div class="li-sub">${state.pushConfigured === false ? 'Not enabled on this server yet' : (pushOn ? 'On for this device' : 'Pop up on your phone/computer')}</div></div>
+      <button class="btn tiny" id="enable-push">${pushOn ? 'Re-check' : 'Enable'}</button></div>
+    <div class="setting-row"><div class="li-main"><div class="t">📧 Email reminders</div><div class="li-sub">A backup copy by email</div></div>${toggle('ch-email', ch.email === true)}</div>
+    <div class="setting-row"><div class="li-main"><div class="t">🔔 In-app</div><div class="li-sub">Always kept in your bell</div></div>${toggle('ch-inapp', ch.inapp !== false)}</div>
+    <div class="section-title">What to remind me about</div>
+    ${catRow('task', 'Tasks &amp; chores', '✅')}
+    ${catRow('event', 'Calendar events', '📅')}
+    ${catRow('bill', 'Bills &amp; due dates', '💵')}
+    ${catRow('birthday', 'Birthdays', '🎂')}
+    ${catRow('anniversary', 'Anniversaries', '💍')}
+    <div class="section-title">Quiet hours</div>
+    <div class="setting-row"><div class="li-main"><div class="t">🌙 Quiet hours</div><div class="li-sub">Hold reminders overnight</div></div>${toggle('q-on', !!q.enabled)}</div>
+    <div class="row2" id="q-times" style="${q.enabled ? '' : 'display:none'}">
+      <div class="field"><label>From</label><input id="q-start" type="time" value="${esc(q.start || '22:00')}" /></div>
+      <div class="field"><label>Until</label><input id="q-end" type="time" value="${esc(q.end || '07:00')}" /></div>
+    </div>
+    <div class="section-title">Privacy</div>
+    <div class="setting-row"><div class="li-main"><div class="t">🔒 Private alerts</div><div class="li-sub">Hide amounts &amp; details on the lock screen</div></div>${toggle('p-priv', !!p.privateMode)}</div>
+    <button class="btn" id="n-save" style="margin-top:14px">Save preferences</button>`);
+
+  const flip = (el) => el.classList.toggle('on');
+  back.querySelectorAll('.toggle').forEach((t) => { if (t.id !== 'enable-push') t.onclick = () => { flip(t); if (t.id === 'q-on') $('#q-times', back).style.display = t.classList.contains('on') ? '' : 'none'; }; });
+  $('#enable-push', back).onclick = () => enablePush();
+  $('#n-save', back).onclick = async () => {
+    const on = (id) => $('#' + id, back)?.classList.contains('on');
+    const body = {
+      channels: { email: on('ch-email'), inapp: on('ch-inapp') },
+      categories: { task: on('cat-task'), event: on('cat-event'), bill: on('cat-bill'), birthday: on('cat-birthday'), anniversary: on('cat-anniversary') },
+      quietHours: { enabled: on('q-on'), start: $('#q-start', back).value || '22:00', end: $('#q-end', back).value || '07:00' },
+      privateMode: on('p-priv'),
+    };
+    try { const out = await api('/notifications/prefs', { method: 'PATCH', body }); state.notifPrefs = out.prefs; back.remove(); toast('Preferences saved ✓'); }
+    catch (e) { toast(e.message || 'Could not save'); }
+  };
+}
+
+// ---------- Web Push subscription ----------
+function urlB64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64); const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+async function enablePush() {
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) { toast('Push isn’t supported on this browser'); return; }
+    const info = await api('/push/vapid-key');
+    if (!info.configured || !info.key) { toast('Push isn’t switched on yet — email + in-app still work.'); return; }
+    if (typeof Notification === 'undefined') { toast('This browser can’t show push notifications.'); return; }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('Allow notifications in your browser to turn this on.'); return; }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(info.key) });
+    await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON ? sub.toJSON() : sub } });
+    toast('Push notifications on 📲');
+  } catch (e) { toast(e.message || 'Could not enable push'); }
+}
+
+// Quick-actions arriving from the service worker (notification buttons / deep links).
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (ev) => {
+    const m = ev.data || {};
+    if (m.type === 'notification-action') {
+      if (m.action === 'view') { if (m.source === 'bill') { state.view = 'bills'; render(); } else { state.view = 'notifs'; render(); loadNotifs(); } }
+      else performNotifAction(m.action, m.source, Number(m.sourceId), Number(m.familyId));
+    }
+  });
+}
+// Deep link from a notification opened while the app was closed (?na=&nt=&ns=&nf=).
+function handleNotifDeepLink() {
+  const p = new URLSearchParams(location.search);
+  if (!p.has('na')) return;
+  const action = p.get('na'), type = p.get('nt'), sid = Number(p.get('ns')), fid = Number(p.get('nf'));
+  history.replaceState(null, '', '/');
+  if (action === 'view') { state.view = type === 'bill' ? 'bills' : 'notifs'; render(); }
+  else if (state.token) performNotifAction(action, type, sid, fid);
+}
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-boot();
+boot().then(handleNotifDeepLink);
