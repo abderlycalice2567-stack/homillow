@@ -373,3 +373,8 @@ html[data-theme="dark"] .verify-bar { background: #33261c; color: #f0d3c2; borde
 .icon-btn { background: transparent; border: none; font-size: 15px; cursor: pointer; padding: 4px; line-height: 1; }
 .check-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; cursor: pointer; }
 .check-row input { width: auto; }
+
+/* Family switcher — chips for people in more than one household */
+.fam-switch { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.fam-chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card, #fff); color: var(--ink); font-size: 13px; font-weight: 700; cursor: pointer; }
+.fam-chip.on { background: var(--brand, #c2582f); border-color: var(--brand, #c2582f); color: #fff; }

@@ -255,7 +255,7 @@ function renderJoin() {
   <div class="screen"><div class="center-wrap"><div class="auth-card">
     <div class="brandmark"><div class="logo">🔑</div><h1>Join a family</h1><p>Enter the invite code you were given.</p></div>
     <div id="err"></div>
-    <div class="field"><label>Invite code</label><input id="code" /></div>
+    <div class="field"><label>Invite code</label><input id="code" autocapitalize="off" autocorrect="off" spellcheck="false" /></div>
     <div class="row2">
       <div class="field"><label>Your label</label><input id="dname" placeholder="Mom" /></div>
       <div class="field"><label>Color</label><input id="color" type="color" value="#3f7d9c" /></div>
@@ -273,6 +273,38 @@ function renderJoin() {
 }
 
 function selectFamily(id) { state.familyId = id; localStorage.setItem('hearth_family', String(id)); }
+
+// Switch which family you're viewing (for people who belong to more than one —
+// e.g. a spouse in two households). Re-boots so every tab reflects the new family.
+async function switchFamily(id) {
+  if (id === state.familyId) return;
+  selectFamily(id);
+  await boot();
+}
+
+// Join an ADDITIONAL family while already signed in. This is the escape hatch for
+// anyone who created their own family by mistake and now needs to join someone
+// else's: same accept endpoint as first-run onboarding, then switches you in.
+function openJoinFamilyModal() {
+  const back = modal(`
+    <h3>🔑 Join another family</h3>
+    <div class="muted small" style="margin-bottom:10px">Enter the invite code someone shared with you. You'll be added to their family and switched into it.</div>
+    <div id="jferr"></div>
+    <div class="field"><label>Invite code</label><input id="jf-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="paste the code" /></div>
+    <div class="row2">
+      <div class="field"><label>Your label</label><input id="jf-dname" placeholder="Mom" /></div>
+      <div class="field"><label>Color</label><input id="jf-color" type="color" value="#3f7d9c" /></div>
+    </div>
+    <button class="btn" id="jf-join">Join family</button>`);
+  $('#jf-join', back).onclick = async () => {
+    const code = $('#jf-code', back).value.trim();
+    if (!code) { $('#jferr', back).innerHTML = `<div class="err">Enter the invite code.</div>`; return; }
+    try {
+      const out = await api('/invites/accept', { method: 'POST', body: { code, displayName: $('#jf-dname', back).value, color: $('#jf-color', back).value } });
+      back.remove(); selectFamily(out.family_id); toast('Joined! 🎉'); await boot();
+    } catch (e) { $('#jferr', back).innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+}
 
 // ---------- websocket ----------
 function connectWS() {
@@ -702,8 +734,15 @@ function renderFamily(c) {
     .filter((e) => e.category === 'couple' && Date.parse(e.occ_end || e.occ_start) >= now)
     .slice(0, 4);
 
+  let html = '';
+  // Family switcher — only when you belong to more than one household.
+  if ((state.families || []).length > 1) {
+    html += `<div class="fam-switch">${state.families.map((f) => `
+      <button class="fam-chip ${f.id === state.familyId ? 'on' : ''}" data-fam="${f.id}">${esc(f.name)}</button>`).join('')}</div>`;
+  }
+
   // ❤️ Our Time — the couple space, warmer and more intimate than the rest
-  let html = `<div class="card us-card">
+  html += `<div class="card us-card">
     <div class="us-head">❤️ Our Time</div>
     <div class="us-sub">Protecting time for each other matters.</div>`;
   if (couple.length) {
@@ -775,7 +814,8 @@ function renderFamily(c) {
     <div class="fam-grid">${state.members.map((m) => `
       <div class="fam-card" data-mid="${m.id}"><span class="av" style="background:${esc(m.color)};width:52px;height:52px;font-size:20px">${esc(initials(m.display_name))}</span>
       <div class="fam-name">${esc(m.display_name)}</div><div class="fam-role">${esc(m.role)}</div></div>`).join('')}</div>
-    <div class="muted small" style="text-align:center;margin-top:8px">Tap anyone to set their color or birthday</div></div>`;
+    <div class="muted small" style="text-align:center;margin-top:8px">Tap anyone to set their color or birthday</div>
+    <button class="btn ghost" id="joinfam" style="margin-top:12px">🔑 Join another family</button></div>`;
 
   if (state.me?.role === 'admin') {
     html += `<div class="card"><h3>Invite someone</h3>
@@ -805,6 +845,8 @@ function renderFamily(c) {
   }
   c.innerHTML = html;
   c.querySelectorAll('[data-mid]').forEach((el) => el.onclick = () => openMemberModal(memberById(Number(el.dataset.mid))));
+  c.querySelectorAll('[data-fam]').forEach((el) => el.onclick = () => switchFamily(Number(el.dataset.fam)));
+  if ($('#joinfam')) $('#joinfam').onclick = openJoinFamilyModal;
   if ($('#addgoal')) $('#addgoal').onclick = openGoalModal;
   c.querySelectorAll('[data-goalinc]').forEach((el) => el.onclick = async (e) => {
     const g = (state.data.goals || []).find((x) => x.id === Number(el.dataset.goalinc));
@@ -863,7 +905,7 @@ function renderSettings(c) {
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v18</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v19</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
   if ($('#notif-row')) $('#notif-row').onclick = openNotifModal;
@@ -1053,7 +1095,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v17<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v19<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {

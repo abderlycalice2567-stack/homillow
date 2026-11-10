@@ -1,5 +1,5 @@
 // Homillow service worker — offline shell cache + Web Push reminders.
-const CACHE = 'homillow-v18';
+const CACHE = 'homillow-v19';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.json'];
 
 self.addEventListener('install', (e) => {
