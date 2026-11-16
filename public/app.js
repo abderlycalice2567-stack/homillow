@@ -272,7 +272,7 @@ function renderJoin() {
   };
 }
 
-function selectFamily(id) { state.familyId = id; localStorage.setItem('hearth_family', String(id)); }
+function selectFamily(id) { state.familyId = id; localStorage.setItem('hearth_family', String(id)); state.calEvents = null; state.calCursor = null; }
 
 // Switch which family you're viewing (for people who belong to more than one —
 // e.g. a spouse in two households). Re-boots so every tab reflects the new family.
@@ -349,6 +349,8 @@ async function refresh(quiet) {
   state.data = { briefing: brief, events: ev.events, tasks: tk.tasks, grocery: gr.items, goals: gl.goals, moments: mo.moments, prayers: pr.prayers, bills: bl.bills || [] };
   state.notifs = nt.notifications || []; state.notifUnread = nt.unread || 0;
   if (!quiet) {} render();
+  // Keep the month grid's events in sync after any add/edit while it's open.
+  if (state.view === 'calendar') loadCal();
 }
 
 // ---------- billing / upgrade flow ----------
@@ -553,15 +555,113 @@ function eventRow(e) {
 }
 
 // ---------- CALENDAR ----------
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function calCursor() {
+  if (!state.calCursor) { const d = new Date(); state.calCursor = { y: d.getFullYear(), m: d.getMonth() }; }
+  return state.calCursor;
+}
+const dayKeyOf = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+const dayKeyISO = (iso) => dayKeyOf(new Date(iso));
+
+// Fetch the events overlapping the visible month (+/- a week of spillover) into a
+// calendar-only store so month navigation works beyond the home screen's window.
+async function loadCal() {
+  const { y, m } = calCursor();
+  const from = new Date(y, m, 1); from.setDate(from.getDate() - 7);
+  const to = new Date(y, m + 1, 0); to.setDate(to.getDate() + 7); to.setHours(23, 59, 59, 999);
+  try {
+    const out = await api(`/families/${state.familyId}/events?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`);
+    state.calEvents = out.events || [];
+  } catch { state.calEvents = state.data.events || []; }
+  if (state.view === 'calendar') renderCalendar($('#content'));
+}
+
+// Everything that lands on a given day: events (occurrence-expanded) + open tasks
+// with a due date. Keyed by local Y-M-D so it drops cleanly into grid cells.
+function calItemsByDay() {
+  const map = {};
+  const seen = new Set();
+  for (const e of [...(state.calEvents || []), ...(state.data.events || [])]) {
+    const start = e.occ_start || e.start_utc;
+    const uniq = `e${e.id}:${start}`;
+    if (seen.has(uniq)) continue; seen.add(uniq);
+    (map[dayKeyISO(start)] ||= []).push({ type: 'event', id: e.id, title: e.title, time: e.all_day ? null : start, category: e.category, color: null, raw: e });
+  }
+  for (const t of (state.data.tasks || [])) {
+    if (!t.due_utc || t.done) continue;
+    const mem = t.assigned_to ? memberById(t.assigned_to) : null;
+    (map[dayKeyISO(t.due_utc)] ||= []).push({ type: 'task', id: t.id, title: t.title, time: t.due_utc, category: 'task', color: mem?.color || null, raw: t });
+  }
+  for (const k in map) map[k].sort((a, b) => (a.time ? Date.parse(a.time) : 0) - (b.time ? Date.parse(b.time) : 0));
+  return map;
+}
+
+function shiftMonth(delta) {
+  const c = calCursor(); let m = c.m + delta, y = c.y;
+  if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
+  state.calCursor = { y, m };
+  loadCal();
+}
+
 function renderCalendar(c) {
-  const evs = state.data.events;
-  if (!evs.length) { c.innerHTML = `<div class="empty-warm big"><div class="ee">🗓️</div><div class="et">Your calendar's a blank canvas.</div><div class="es">Tap the + to add your first event.</div></div>`; return; }
-  const groups = {};
-  for (const e of evs) { const k = new Date(e.occ_start).toDateString(); (groups[k] ||= []).push(e); }
-  c.innerHTML = Object.entries(groups).map(([day, list]) => `
-    <div class="section-title">${esc(fmtDay(list[0].occ_start))}</div>
-    <div class="card">${list.map((e) => `<div data-id="${e.id}" class="ev-tap">${eventRow(e)}</div>`).join('')}</div>`).join('');
-  c.querySelectorAll('.ev-tap').forEach((el) => el.onclick = () => openEvent(Number(el.dataset.id)));
+  if (!state.calEvents) loadCal();   // first open: fill the wider window (renders with state.data meanwhile)
+  const { y, m } = calCursor();
+  const items = calItemsByDay();
+  const first = new Date(y, m, 1);
+  const todayKey = dayKeyOf(new Date());
+  const monthName = first.toLocaleDateString([], { month: 'long', year: 'numeric' });
+  const gridStart = new Date(y, m, 1 - first.getDay());  // back up to the Sunday
+
+  let cells = '';
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+    const k = dayKeyOf(d);
+    const list = items[k] || [];
+    const chips = list.slice(0, 3).map((it) =>
+      `<span class="cal-chip ${it.type}"${it.color ? ` style="background:${esc(it.color)}26;border-left-color:${esc(it.color)}"` : ''}>${it.type === 'task' ? '✓' : catIcon(it.category)} ${esc(it.title)}</span>`).join('');
+    const more = list.length > 3 ? `<span class="cal-more">+${list.length - 3} more</span>` : '';
+    cells += `<button class="cal-cell ${d.getMonth() === m ? '' : 'out'} ${k === todayKey ? 'today' : ''}" data-day="${k}">
+      <span class="cal-num">${d.getDate()}</span>${chips}${more}</button>`;
+  }
+
+  c.innerHTML = `
+    <div class="cal-head">
+      <button class="cal-nav" id="cal-prev" aria-label="Previous month">‹</button>
+      <button class="cal-title" id="cal-today">${esc(monthName)}</button>
+      <button class="cal-nav" id="cal-next" aria-label="Next month">›</button>
+    </div>
+    <div class="cal-weekdays">${WEEKDAYS.map((w) => `<div>${w}</div>`).join('')}</div>
+    <div class="cal-grid">${cells}</div>`;
+  $('#cal-prev').onclick = () => shiftMonth(-1);
+  $('#cal-next').onclick = () => shiftMonth(1);
+  $('#cal-today').onclick = () => { const d = new Date(); state.calCursor = { y: d.getFullYear(), m: d.getMonth() }; loadCal(); };
+  c.querySelectorAll('[data-day]').forEach((el) => el.onclick = () => openDayModal(el.dataset.day));
+}
+
+// Tap a day → everything planned for it, with quick add for an event or task on that day.
+function openDayModal(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m, d);
+  const list = calItemsByDay()[key] || [];
+  const rows = list.length ? list.map((it) => {
+    if (it.type === 'event') {
+      return `<div class="list-item cal-dayrow" data-ev="${it.id}"><div class="li-main"><div class="t">${catIcon(it.category)} ${esc(it.title)}</div>
+        <div class="li-sub">${it.time ? esc(fmtTime(it.time)) : 'All day'} · ${esc(it.category)}</div></div></div>`;
+    }
+    const mem = it.raw.assigned_to ? memberById(it.raw.assigned_to) : null;
+    return `<div class="list-item cal-dayrow" data-tk="${it.id}"><div class="li-main"><div class="t">✓ ${esc(it.title)}</div>
+      <div class="li-sub">Task${mem ? ' · ' + esc(mem.display_name) : ''}${it.time ? ' · due ' + esc(fmtTime(it.time)) : ''}</div></div></div>`;
+  }).join('') : `<div class="empty-warm"><div class="ee">🗓️</div><div class="et">Nothing planned for this day.</div></div>`;
+  const label = date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  const back = modal(`<h3>${esc(label)}</h3>${rows}
+    <div class="row2" style="margin-top:14px">
+      <button class="btn" id="day-ev" style="flex:1">+ Event</button>
+      <button class="btn secondary" id="day-tk" style="flex:1">+ Task</button>
+    </div>`);
+  back.querySelectorAll('[data-ev]').forEach((el) => el.onclick = () => { back.remove(); openEvent(Number(el.dataset.ev)); });
+  back.querySelectorAll('[data-tk]').forEach((el) => el.onclick = () => { const t = (state.data.tasks || []).find((x) => x.id === Number(el.dataset.tk)); back.remove(); if (t) openTaskModal(t); });
+  $('#day-ev', back).onclick = () => { back.remove(); openEventModal(null, date); };
+  $('#day-tk', back).onclick = () => { back.remove(); openTaskModal(null, date); };
 }
 
 // ---------- TASKS ----------
@@ -905,7 +1005,7 @@ function renderSettings(c) {
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v19</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v20</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
   if ($('#notif-row')) $('#notif-row').onclick = openNotifModal;
@@ -1095,7 +1195,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v19<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v20<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
@@ -1128,14 +1228,21 @@ function nowLocalInput(addH = 0) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function openEventModal(preset) {
+// datetime-local string for a specific calendar day at a given hour (used when you
+// add an event straight from a day on the month grid — it lands on that day).
+function dateLocalInput(date, hour) {
+  const d = new Date(date); d.setHours(hour, 0, 0, 0);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function openEventModal(preset, presetDate) {
   const cats = ['family', 'couple', 'work', 'school', 'sports', 'medical', 'church', 'personal', 'household', 'important'];
   const back = modal(`
     <h3>${preset === 'couple' ? '❤️ Schedule couple time' : 'New event'}</h3><div id="merr"></div>
     <div class="field"><label>Title</label><input id="e-title" placeholder="${preset === 'couple' ? 'Date night' : 'Soccer practice'}" /></div>
     <div class="row2">
-      <div class="field"><label>Start</label><input id="e-start" type="datetime-local" value="${nowLocalInput(1)}" /></div>
-      <div class="field"><label>End</label><input id="e-end" type="datetime-local" value="${nowLocalInput(2)}" /></div>
+      <div class="field"><label>Start</label><input id="e-start" type="datetime-local" value="${presetDate ? dateLocalInput(presetDate, 9) : nowLocalInput(1)}" /></div>
+      <div class="field"><label>End</label><input id="e-end" type="datetime-local" value="${presetDate ? dateLocalInput(presetDate, 10) : nowLocalInput(2)}" /></div>
     </div>
     <div class="row2">
       <div class="field"><label>Category</label><select id="e-cat">${cats.map((x) => `<option ${x === preset ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
@@ -1206,9 +1313,10 @@ async function openEvent(id) {
   };
 }
 // Create a task, or — when passed an existing task — reopen it prefilled for editing.
-function openTaskModal(task = null) {
+function openTaskModal(task = null, presetDate = null) {
   const editing = !!task;
-  const dueVal = task?.due_utc ? new Date(task.due_utc).toISOString().slice(0, 10) : '';
+  const toYMD = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+  const dueVal = task?.due_utc ? new Date(task.due_utc).toISOString().slice(0, 10) : (presetDate ? toYMD(presetDate) : '');
   const back = modal(`
     <h3>${editing ? 'Edit task / chore' : 'New task / chore'}</h3><div id="merr"></div>
     <div class="field"><label>Task</label><input id="t-title" placeholder="Take out trash" value="${editing ? esc(task.title) : ''}" /></div>

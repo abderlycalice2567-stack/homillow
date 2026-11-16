@@ -374,6 +374,25 @@ html[data-theme="dark"] .verify-bar { background: #33261c; color: #f0d3c2; borde
 .check-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; cursor: pointer; }
 .check-row input { width: auto; }
 
+/* ---------- Full month calendar grid (v20) ---------- */
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.cal-nav { width: 42px; height: 42px; border-radius: 11px; border: 1px solid var(--line); background: var(--card, #fff); color: var(--ink); font-size: 24px; line-height: 1; cursor: pointer; }
+.cal-title { flex: 1; text-align: center; font-weight: 800; font-size: 18px; background: none; border: none; color: var(--ink); cursor: pointer; padding: 6px; border-radius: 10px; }
+.cal-title:active { background: var(--oat, #e9e0d4); }
+.cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 5px; }
+.cal-weekdays div { text-align: center; font-size: 11px; font-weight: 800; color: var(--muted); letter-spacing: .02em; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-rows: minmax(78px, 1fr); gap: 4px; }
+.cal-cell { display: flex; flex-direction: column; gap: 2px; align-items: stretch; text-align: left; padding: 3px 3px 4px; min-height: 78px; border: 1px solid var(--line); border-radius: 9px; background: var(--card, #fff); cursor: pointer; overflow: hidden; }
+.cal-cell.out { opacity: .4; }
+.cal-cell.today { border-color: var(--brand, #c2582f); border-width: 2px; padding: 2px 2px 3px; }
+.cal-cell:active { background: var(--oat, #e9e0d4); }
+.cal-num { font-size: 12px; font-weight: 800; color: var(--ink); align-self: flex-start; padding: 0 2px; }
+.cal-cell.today .cal-num { background: var(--brand, #c2582f); color: #fff; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; }
+.cal-chip { font-size: 9.5px; line-height: 1.25; padding: 1px 3px; border-radius: 4px; background: color-mix(in srgb, var(--brand, #c2582f) 14%, transparent); border-left: 2px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.cal-chip.task { background: color-mix(in srgb, #3f7d9c 18%, transparent); }
+.cal-more { font-size: 9px; font-weight: 700; color: var(--muted); padding-left: 3px; }
+.cal-dayrow { cursor: pointer; }
+
 /* Family switcher — chips for people in more than one household */
 .fam-switch { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .fam-chip { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card, #fff); color: var(--ink); font-size: 13px; font-weight: 700; cursor: pointer; }
