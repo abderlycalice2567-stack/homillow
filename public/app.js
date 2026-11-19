@@ -520,6 +520,23 @@ function renderHome(c) {
   }
   html += `</div>`;
 
+  // Today's tasks — a check-off list right on the home screen so it clears as
+  // things get done (tasksDue = open tasks due today or earlier, from the briefing).
+  const due = b.tasksDue || [];
+  if (due.length) {
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    html += `<div class="card"><div class="card-head"><h3>Today's tasks</h3><span class="count-pill">${due.length} to do</span></div>
+      ${due.map((t) => {
+        const m = t.assigned_to ? memberById(t.assigned_to) : null;
+        const overdue = t.due_utc && new Date(t.due_utc) < todayStart;
+        return `<div class="list-item">
+          <div class="check" data-homedone="${t.id}" role="button" aria-label="Mark done"></div>
+          <div class="li-main"><div class="t">${esc(t.title)}</div>
+          <div class="li-sub">${m ? esc(m.display_name) : 'Anyone'}${t.points ? ' · ⭐' + t.points : ''}${overdue ? ' · <span class="due-over">overdue</span>' : ''}</div></div>
+        </div>`;
+      }).join('')}</div>`;
+  }
+
   // today's verse — the faith layer, gently present on the home screen
   if (b.devotional) html += devotionalCard(b.devotional, true);
 
@@ -545,6 +562,14 @@ function renderHome(c) {
 
   c.innerHTML = html;
   c.querySelectorAll('[data-go]').forEach((el) => el.onclick = () => { state.view = el.dataset.go; render(); });
+  // Check a task off straight from the home screen — it marks done and the list
+  // clears it on refresh (and cancels its reminders server-side).
+  c.querySelectorAll('[data-homedone]').forEach((el) => el.onclick = async (ev) => {
+    el.classList.add('on'); el.textContent = '✓';
+    celebrate(ev.clientX, ev.clientY); toast(pick(DONE_MSG));
+    try { await api(`/families/${state.familyId}/tasks/${el.dataset.homedone}`, { method: 'PATCH', body: { done: true } }); } catch (e) { toast(e.message); }
+    refresh();
+  });
 }
 function eventRow(e) {
   return `<div class="event-row">
@@ -1005,7 +1030,7 @@ function renderSettings(c) {
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v20</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v21</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
   if ($('#notif-row')) $('#notif-row').onclick = openNotifModal;
@@ -1195,7 +1220,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v20<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v21<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
