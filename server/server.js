@@ -22,7 +22,7 @@ import {
 import {
   startEngine, setBroadcaster, scheduleSource, cancelSource, scheduleAnnualsFor,
   getPrefs, setPrefs, savePushSub, removePushSub, vapidPublicKey, pushConfigured,
-  listNotifications, markRead, snooze,
+  listNotifications, markRead, snooze, pushTest,
 } from './notifications.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -911,6 +911,8 @@ app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
   removePushSub(req.userId, str(req.body?.endpoint, 500));
   res.json({ ok: true });
 });
+// Fire an immediate test push to the caller's own devices (settings "Send test").
+app.post('/api/push/test', requireAuth, wrap(async (req, res) => res.json(await pushTest(req.userId))));
 
 // Actionable notifications (Done / Mark paid / Snooze) — each change re-checks the
 // caller's authorization against the family that owns the item before mutating.

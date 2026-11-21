@@ -116,6 +116,22 @@ async function sendWebPush(userId, payload) {
   }
 }
 
+// Send an immediate test notification to the caller's own devices. Returns how many
+// subscriptions it hit so the UI can tell "no device enabled yet" from "it was sent".
+export async function pushTest(userId) {
+  const n = db.prepare('SELECT COUNT(*) n FROM push_subscriptions WHERE user_id = ?').get(userId).n;
+  if (!pushReady) return { pushReady: false, subscriptions: n };
+  if (n > 0) {
+    await sendWebPush(userId, {
+      title: '🔔 Homillow',
+      body: 'Push notifications are working on this device.',
+      tag: 'homillow-test',
+      data: { url: '/' },
+    });
+  }
+  return { pushReady: true, subscriptions: n };
+}
+
 // ---------- time helpers (timezone + DST aware) ----------
 // Offset in ms such that  localWallTime = utcTime + offset  for the given zone/instant.
 function tzOffsetMs(utcMs, tz) {

@@ -1030,7 +1030,7 @@ function renderSettings(c) {
       <button class="toggle ${dark ? 'on' : ''}" id="themetoggle" aria-label="Toggle dark mode"><span class="knob"></span></button></div>
       <div class="setting-row" id="help-row" style="cursor:pointer"><div class="li-main"><div class="t">Help &amp; support</div><div class="li-sub">Contact, Terms &amp; Privacy</div></div><span class="chev">›</span></div>
       <button class="btn ghost" id="logout" style="margin-top:14px">Sign out</button>
-      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v21</div></div>`;
+      <div class="muted small" style="text-align:center;margin-top:12px">Homillow · v22</div></div>`;
   if ($('#acct-row')) $('#acct-row').onclick = openAccountModal;
   if ($('#subs-row')) $('#subs-row').onclick = openSubscriptionModal;
   if ($('#notif-row')) $('#notif-row').onclick = openNotifModal;
@@ -1220,7 +1220,7 @@ function openHelpModal() {
       <a class="btn secondary" href="/terms.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Terms</a>
       <a class="btn secondary" href="/privacy.html" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">Privacy</a>
     </div>
-    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v21<br>homillow.family@gmail.com</div>`);
+    <div class="muted small" style="text-align:center;margin-top:16px">Homillow · v22<br>homillow.family@gmail.com</div>`);
 }
 
 function modal(inner) {
@@ -1618,7 +1618,7 @@ async function openNotifModal() {
     <div class="muted small" style="margin-bottom:8px">Choose how and what Homillow reminds you about. These settings are yours alone.</div>
     <div class="section-title">How you're reminded</div>
     <div class="setting-row"><div class="li-main"><div class="t">📲 Push notifications</div><div class="li-sub">${state.pushConfigured === false ? 'Not enabled on this server yet' : (pushOn ? 'On for this device' : 'Pop up on your phone/computer')}</div></div>
-      <button class="btn tiny" id="enable-push">${pushOn ? 'Re-check' : 'Enable'}</button></div>
+      <div style="display:flex;gap:6px">${pushOn ? '<button class="btn tiny ghost" id="test-push">Test</button>' : ''}<button class="btn tiny" id="enable-push">${pushOn ? 'Re-check' : 'Enable'}</button></div></div>
     <div class="setting-row"><div class="li-main"><div class="t">📧 Email reminders</div><div class="li-sub">A backup copy by email</div></div>${toggle('ch-email', ch.email === true)}</div>
     <div class="setting-row"><div class="li-main"><div class="t">🔔 In-app</div><div class="li-sub">Always kept in your bell</div></div>${toggle('ch-inapp', ch.inapp !== false)}</div>
     <div class="section-title">What to remind me about</div>
@@ -1640,6 +1640,14 @@ async function openNotifModal() {
   const flip = (el) => el.classList.toggle('on');
   back.querySelectorAll('.toggle').forEach((t) => { if (t.id !== 'enable-push') t.onclick = () => { flip(t); if (t.id === 'q-on') $('#q-times', back).style.display = t.classList.contains('on') ? '' : 'none'; }; });
   $('#enable-push', back).onclick = () => enablePush();
+  if ($('#test-push', back)) $('#test-push', back).onclick = async () => {
+    try {
+      const r = await api('/push/test', { method: 'POST' });
+      if (!r.pushReady) toast('Push isn’t switched on for the app yet.');
+      else if (!r.subscriptions) toast('No device enabled yet — tap Enable first.');
+      else toast('Test sent 📲 — check your phone’s lock screen.');
+    } catch (e) { toast(e.message || 'Could not send test'); }
+  };
   $('#n-save', back).onclick = async () => {
     const on = (id) => $('#' + id, back)?.classList.contains('on');
     const body = {
